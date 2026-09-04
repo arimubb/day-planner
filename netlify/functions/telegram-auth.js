@@ -1,138 +1,10 @@
 const crypto = require("crypto");
-const { createClient } = require("@supabase/supabase-js");
-
-const supabase = createClient(
-    process.env.SUPABASE_URL,
-    process.env.SUPABASE_SERVICE_ROLE_KEY
-);
-
-function json(statusCode, data) {
-    return {
-        statusCode,
-        headers: {
-            "Content-Type": "application/json",
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Headers": "Content-Type",
-            "Access-Control-Allow-Methods": "POST, OPTIONS"
-        },
-        body: JSON.stringify(data)
-    };
-}
 
 /* =========================================================
-   TELEGRAM INIT DATA
-========================================================= */
-
-function validateTelegramInitData(initData) {
-
-    if (!initData) {
-        return null;
-    }
-
-    const botToken =
-        process.env.TELEGRAM_BOT_TOKEN;
-
-    if (!botToken) {
-        throw new Error(
-            "TELEGRAM_BOT_TOKEN is not configured"
-        );
-    }
-
-    const params =
-        new URLSearchParams(initData);
-
-    const receivedHash =
-        params.get("hash");
-
-    if (!receivedHash) {
-        return null;
-    }
-
-    params.delete("hash");
-
-    const dataCheckString =
-        [...params.entries()]
-            .sort(([a], [b]) =>
-                a.localeCompare(b)
-            )
-            .map(
-                ([key, value]) =>
-                    `${key}=${value}`
-            )
-            .join("\n");
-
-    const secretKey =
-        crypto
-            .createHmac(
-                "sha256",
-                "WebAppData"
-            )
-            .update(botToken)
-            .digest();
-
-    const calculatedHash =
-        crypto
-            .createHmac(
-                "sha256",
-                secretKey
-            )
-            .update(dataCheckString)
-            .digest("hex");
-
-    if (calculatedHash !== receivedHash) {
-        return null;
-    }
-
-    const authDate =
-        Number(
-            params.get("auth_date")
-        );
-
-    if (!authDate) {
-        return null;
-    }
-
-    const now =
-        Math.floor(
-            Date.now() / 1000
-        );
-
-    if (
-        now - authDate > 86400
-    ) {
-        return null;
-    }
-
-    const userString =
-        params.get("user");
-
-    if (!userString) {
-        return null;
-    }
-
-    try {
-
-        return {
-            user:
-                JSON.parse(userString),
-
-            authDate
-        };
-
-    } catch {
-
-        return null;
-
-    }
-
-}
-
-/* =========================================================
-   SESSION TOKEN
+   SESSION SECRET
 ========================================================= */
 
 function getSessionSecret() {
-
     const secret =
         process.env.TELEGRAM_BOT_TOKEN;
 
@@ -145,12 +17,14 @@ function getSessionSecret() {
     return secret;
 }
 
-function createSessionToken(userId) {
+/* =========================================================
+   CREATE SESSION TOKEN
+========================================================= */
 
+function createSessionToken(userId) {
     const payload = {
         userId,
-        createdAt:
-            Date.now()
+        createdAt: Date.now()
     };
 
     const payloadString =
@@ -171,200 +45,189 @@ function createSessionToken(userId) {
 
     return `${payloadString}.${signature}`;
 }
-function createHandoffCode() {
-    return crypto.randomBytes(32).toString("hex");
-}
+
 /* =========================================================
-   HANDLER
+   VERIFY SESSION TOKEN
 ========================================================= */
 
-exports.handler = async (event) => {
+function verifySessionToken(token) {
+    if (!token) {
+        return null;
+    }
+
+    const parts =
+        token.split(".");
+
+    if (parts.length !== 2) {
+        return null;
+    }
+
+    const [
+        payloadString,
+        receivedSignature
+    ] = parts;
+
+    const expectedSignature =
+        crypto
+            .createHmac(
+                "sha256",
+                getSessionSecret()
+            )
+            .update(payloadString)
+            .digest("base64url");
+
+    const receivedBuffer =
+        Buffer.from(
+            receivedSignature
+        );
+
+    const expectedBuffer =
+        Buffer.from(
+            expectedSignature
+        );
 
     if (
-        event.httpMethod ===
-        "OPTIONS"
+        receivedBuffer.length !==
+        expectedBuffer.length
     ) {
-        return json(204, {});
+        return null;
     }
 
     if (
-        event.httpMethod !==
-        "POST"
+        !crypto.timingSafeEqual(
+            receivedBuffer,
+            expectedBuffer
+        )
     ) {
-        return json(405, {
-            error:
-                "Method not allowed"
-        });
+        return null;
     }
 
     try {
-
-        let body;
-
-        try {
-
-            body =
-                JSON.parse(
-                    event.body || "{}"
-                );
-
-        } catch {
-
-            return json(400, {
-                error:
-                    "Invalid JSON"
-            });
-
-        }
-
-        const initData =
-            body.initData;
-
-        if (!initData) {
-
-            return json(400, {
-                error:
-                    "Telegram initData is required"
-            });
-
-        }
-
-        /* Проверяем подпись Telegram */
-
-        const telegramData =
-            validateTelegramInitData(
-                initData
+        const payload =
+            JSON.parse(
+                Buffer
+                    .from(
+                        payloadString,
+                        "base64url"
+                    )
+                    .toString("utf8")
             );
 
-        if (!telegramData) {
-
-            return json(401, {
-                error:
-                    "Invalid Telegram initData"
-            });
-
+        if (!payload.userId) {
+            return null;
         }
 
-        const telegramUser =
-            telegramData.user;
-
-        if (!telegramUser?.id) {
-
-            return json(401, {
-                error:
-                    "Telegram user not found"
-            });
-
+        if (!payload.createdAt) {
+            return null;
         }
 
-        /* =================================================
-           СОХРАНЯЕМ ПОЛЬЗОВАТЕЛЯ
-        ================================================= */
+        const sessionAge =
+            Date.now() -
+            Number(payload.createdAt);
 
-        const {
-            data: databaseUser,
-            error
-        } = await supabase
-            .from("telegram_users")
-            .upsert(
-                {
-                    telegram_id:
-                        telegramUser.id,
-
-                    first_name:
-                        telegramUser.first_name ||
-                        "",
-
-                    last_name:
-                        telegramUser.last_name ||
-                        "",
-
-                    username:
-                        telegramUser.username ||
-                        "",
-
-                    photo_url:
-                        telegramUser.photo_url ||
-                        "",
-
-                    updated_at:
-                        new Date().toISOString()
-                },
-                {
-                    onConflict:
-                        "telegram_id"
-                }
-            )
-            .select("*")
-            .single();
-
-        if (error) {
-
-            console.error(
-                "Supabase user error:",
-                error
-            );
-
-            return json(500, {
-                error:
-                    "Failed to save Telegram user"
-            });
-
+        // Сессия действует 24 часа
+        if (
+            sessionAge >
+            86400000
+        ) {
+            return null;
         }
 
-        /* =================================================
-           СОЗДАЁМ СЕССИЮ
-        ================================================= */
+        if (sessionAge < 0) {
+            return null;
+        }
 
-        const sessionToken =
-            createSessionToken(
-                databaseUser.id
-            );
-        const handoffCode = createHandoffCode();
+        return {
+            userId: payload.userId
+        };
 
-        const { error: handoffError } = await supabase
-            .from("telegram_handoffs")
-            .insert({
-                code: handoffCode,
-                telegram_user_id: databaseUser.id
-            });
-
-        if (handoffError) {
-            console.error(
-                "Handoff creation error:",
-                handoffError
-            );
-
-            return json(500, {
-                error: "Failed to create handoff"
-            });
+    } catch {
+        return null;
+    }
 }
-        return json(200, {
-    success: true,
-    sessionToken,
-    handoffCode,
-    user: {
-        id: databaseUser.id,
-        telegramId: databaseUser.telegram_id,
-        firstName: databaseUser.first_name,
-        lastName: databaseUser.last_name,
-        username: databaseUser.username,
-        photoUrl: databaseUser.photo_url
-    }
-});
 
-    } catch (error) {
+/* =========================================================
+   GET COOKIE
+========================================================= */
 
-        console.error(
-            "telegram-auth.js error:",
-            error
-        );
+function getCookie(event, name) {
+    const cookieHeader =
+        event.headers?.cookie ||
+        event.headers?.Cookie;
 
-        return json(500, {
-            error:
-                "Internal server error"
-        });
-
+    if (!cookieHeader) {
+        return null;
     }
 
+    const cookies =
+        cookieHeader.split(";");
+
+    for (const cookie of cookies) {
+        const [key, ...valueParts] =
+            cookie.trim().split("=");
+
+        if (key === name) {
+            return decodeURIComponent(
+                valueParts.join("=")
+            );
+        }
+    }
+
+    return null;
+}
+
+/* =========================================================
+   GET SESSION TOKEN
+========================================================= */
+
+function getSessionToken(event) {
+    /*
+     * 1. Сначала Authorization Bearer
+     *
+     * Это используется текущим app.js.
+     */
+
+    const authorization =
+        event.headers?.authorization ||
+        event.headers?.Authorization;
+
+    if (authorization) {
+        if (
+            authorization.startsWith(
+                "Bearer "
+            )
+        ) {
+            const token =
+                authorization
+                    .slice(7)
+                    .trim();
+
+            if (token) {
+                return token;
+            }
+        }
+    }
+
+    /*
+     * 2. Если Bearer нет —
+     * берём session из cookie.
+     *
+     * Это нужно для PWA,
+     * установленной на iPhone.
+     */
+
+    return getCookie(
+        event,
+        "dayPlannerSession"
+    );
+}
+
+/* =========================================================
+   EXPORT
+========================================================= */
+
+module.exports = {
+    createSessionToken,
+    verifySessionToken,
+    getSessionToken
 };
