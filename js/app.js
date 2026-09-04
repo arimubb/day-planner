@@ -1,5 +1,6 @@
 const THEME_KEY = "dayPlannerTheme";
 const SESSION_KEY = "dayPlannerSession";
+const USER_KEY = "dayPlannerTelegramUser";
 
 const API_BASE = "/.netlify/functions";
 
@@ -92,6 +93,16 @@ function getTelegramWebApp() {
     return null;
 }
 
+function isTelegramMiniApp() {
+    const tg = getTelegramWebApp();
+
+    return Boolean(
+        tg &&
+        typeof tg.initData === "string" &&
+        tg.initData.length > 0
+    );
+}
+
 function setupTelegram() {
 
     const tg = getTelegramWebApp();
@@ -122,129 +133,111 @@ function setupTelegram() {
 ========================================================= */
 
 function setupHomeScreenButton() {
+    const button =
+        $("addToHomeScreenButton");
 
-    const button = $("addToHomeScreenButton");
-    const overlay = $("homeScreenOverlay");
-    const closeButton = $("closeHomeScreen");
-    const closeBottomButton = $("closeHomeScreenBottom");
+    const overlay =
+        $("homeScreenOverlay");
+
+    const closeButton =
+        $("closeHomeScreen");
+
+    const closeBottomButton =
+        $("closeHomeScreenBottom");
 
     if (!button || !overlay) {
         return;
     }
-
 
     function openHomeScreenModal() {
         overlay.classList.add("active");
         document.body.classList.add("modal-open");
     }
 
-
     function closeHomeScreenModal() {
         overlay.classList.remove("active");
         document.body.classList.remove("modal-open");
     }
 
+    button.addEventListener(
+        "click",
+        () => {
+            const tg =
+                getTelegramWebApp();
 
-    button.addEventListener("click", () => {
+            /*
+             * ======================================
+             * TELEGRAM
+             * ======================================
+             *
+             * Открываем сайт во внешнем браузере.
+             */
 
-        const tg = getTelegramWebApp();
+            if (
+                isTelegramMiniApp() &&
+                tg &&
+                typeof tg.openLink === "function"
+            ) {
+                try {
+                    tg.openLink(
+                        window.location.origin +
+                        window.location.pathname
+                    );
 
-        /*
-         * Если Telegram поддерживает
-         * официальное добавление Mini App
-         * на главный экран — вызываем его.
-         */
-        if (
-            tg &&
-            typeof tg.addToHomeScreen === "function"
-        ) {
+                    return;
 
-            try {
-                tg.addToHomeScreen();
-            } catch (error) {
-
-                console.warn(
-                    "Не удалось вызвать addToHomeScreen:",
-                    error
-                );
-
+                } catch (error) {
+                    console.warn(
+                        "Не удалось открыть Safari:",
+                        error
+                    );
+                }
             }
 
+            /*
+             * ======================================
+             * SAFARI / PWA
+             * ======================================
+             */
+
+            openHomeScreenModal();
         }
-
-        /*
-         * В любом случае показываем инструкцию.
-         * Это важно для iPhone и клиентов Telegram,
-         * где автоматический метод недоступен.
-         */
-        openHomeScreenModal();
-
-    });
-
+    );
 
     closeButton?.addEventListener(
         "click",
         closeHomeScreenModal
     );
 
-
     closeBottomButton?.addEventListener(
         "click",
         closeHomeScreenModal
     );
 
-
-    overlay.addEventListener("click", (event) => {
-
-        if (event.target === overlay) {
-            closeHomeScreenModal();
+    overlay.addEventListener(
+        "click",
+        (event) => {
+            if (
+                event.target === overlay
+            ) {
+                closeHomeScreenModal();
+            }
         }
+    );
 
-    });
-
-
-    document.addEventListener("keydown", (event) => {
-
-        if (
-            event.key === "Escape" &&
-            overlay.classList.contains("active")
-        ) {
-            closeHomeScreenModal();
+    document.addEventListener(
+        "keydown",
+        (event) => {
+            if (
+                event.key === "Escape" &&
+                overlay.classList.contains(
+                    "active"
+                )
+            ) {
+                closeHomeScreenModal();
+            }
         }
-
-    });
-
-
-    /*
-     * Telegram сообщает, если Mini App
-     * действительно был добавлен.
-     */
-    if (window.Telegram?.WebApp) {
-
-        try {
-
-            window.Telegram.WebApp.onEvent(
-                "homeScreenAdded",
-                () => {
-
-                    console.log(
-                        "Mini App добавлен на экран Домой"
-                    );
-
-                }
-            );
-
-        } catch (error) {
-
-            console.warn(
-                "Не удалось подключить homeScreenAdded:",
-                error
-            );
-
-        }
-
-    }
-
+    );
 }
 /* =========================================================
 API
@@ -303,18 +296,23 @@ async function apiRequest(
 
     if (!response.ok) {
 
-        if (
-            response.status === 401
-        ) {
-
+        if (response.status === 401) {
             sessionToken = null;
+            telegramUser = null;
 
             try {
+                localStorage.removeItem(
+                    SESSION_KEY
+                );
+
+                localStorage.removeItem(
+                    USER_KEY
+                );
+
                 sessionStorage.removeItem(
                     SESSION_KEY
                 );
             } catch {}
-
         }
 
         throw new Error(
@@ -332,97 +330,115 @@ TELEGRAM AUTH
 ========================================================= */
 
 async function authenticateTelegram() {
+    const tg = setupTelegram();
 
-    const tg =
-        setupTelegram();
-
-    if (!tg) {
-
+    if (!tg || !tg.initData) {
         throw new Error(
-            "Откройте приложение внутри Telegram."
+            "Откройте приложение через Telegram для первой авторизации."
         );
-
     }
 
-    const initData =
-        tg.initData;
+    const initData = tg.initData;
 
-    if (!initData) {
-
-        throw new Error(
-            "Telegram не передал данные авторизации."
-        );
-
-    }
-
-    const response =
-        await fetch(
-            `${API_BASE}/telegram-auth`,
-            {
-                method: "POST",
-
-                headers: {
-                    "Content-Type":
-                        "application/json"
-                },
-
-                body: JSON.stringify({
-                    initData
-                })
-            }
-        );
+    const response = await fetch(
+        `${API_BASE}/telegram-auth`,
+        {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                initData
+            })
+        }
+    );
 
     let data = {};
 
     try {
-
-        data =
-            await response.json();
-
+        data = await response.json();
     } catch {
-
         data = {};
-
     }
 
     if (!response.ok) {
-
         throw new Error(
             data.error ||
             "Не удалось авторизоваться через Telegram."
         );
-
     }
 
-    if (
-        !data.sessionToken
-    ) {
-
+    if (!data.sessionToken) {
         throw new Error(
             "Сервер не вернул sessionToken."
         );
-
     }
 
-    sessionToken =
-        data.sessionToken;
+    sessionToken = data.sessionToken;
+    telegramUser = data.user || null;
 
-    telegramUser =
-        data.user || null;
-
+    /*
+     * Сохраняем сессию для Safari / PWA
+     */
     try {
-
-        sessionStorage.setItem(
+        localStorage.setItem(
             SESSION_KEY,
             sessionToken
         );
 
-    } catch {}
+        if (telegramUser) {
+            localStorage.setItem(
+                USER_KEY,
+                JSON.stringify(telegramUser)
+            );
+        }
+    } catch (error) {
+        console.warn(
+            "Не удалось сохранить сессию:",
+            error
+        );
+    }
 
     return data;
-
 }
+function restoreLocalSession() {
+    try {
+        const savedToken =
+            localStorage.getItem(
+                SESSION_KEY
+            );
 
+        const savedUser =
+            localStorage.getItem(
+                USER_KEY
+            );
+
+        if (!savedToken) {
+            return false;
+        }
+
+        sessionToken = savedToken;
+
+        if (savedUser) {
+            try {
+                telegramUser =
+                    JSON.parse(savedUser);
+            } catch {
+                telegramUser = null;
+            }
+        }
+
+        return true;
+
+    } catch (error) {
+        console.warn(
+            "Не удалось восстановить сессию:",
+            error
+        );
+
+        return false;
+    }
+}
 /* =========================================================
 LOAD TASKS
 ========================================================= */
@@ -3438,40 +3454,80 @@ INIT
 ========================================================= */
 
 async function init() {
-
     loadTheme();
-
     updateDateUI();
     setupHomeScreenButton();
-    try {
 
-        await authenticateTelegram();
-        renderTelegramUser();
-        await loadTasksFromServer();
+    try {
+        /*
+         * ==========================================
+         * ЕСЛИ ОТКРЫТО В TELEGRAM
+         * ==========================================
+         */
+
+        if (isTelegramMiniApp()) {
+            await authenticateTelegram();
+
+            renderTelegramUser();
+
+            await loadTasksFromServer();
+        }
+
+        /*
+         * ==========================================
+         * SAFARI / PWA
+         * ==========================================
+         */
+
+        else {
+            const restored =
+                restoreLocalSession();
+
+            if (!restored) {
+                throw new Error(
+                    "Сначала откройте приложение через Telegram и войдите в него."
+                );
+            }
+
+            renderTelegramUser();
+
+            await loadTasksFromServer();
+        }
+
+        /*
+         * ==========================================
+         * ОТРИСОВКА
+         * ==========================================
+         */
 
         renderCalendar();
-
         renderTasks();
-
         renderAllTasks();
-
         renderAnalytics();
 
     } catch (error) {
-
         console.error(
             "Ошибка запуска приложения:",
             error
         );
 
         renderCalendar();
-
         renderTasks();
 
-        const message =
-            document.createElement(
-                "div"
+        const oldMessage =
+            document.getElementById(
+                "startupErrorMessage"
             );
+
+        if (oldMessage) {
+            oldMessage.remove();
+        }
+
+        const message =
+            document.createElement("div");
+
+        message.id =
+            "startupErrorMessage";
 
         message.style.cssText = `
             position: fixed;
@@ -3488,7 +3544,8 @@ async function init() {
         `;
 
         message.innerHTML = `
-            <div>
+            <div style="max-width: 420px;">
+
                 <div style="
                     font-size: 42px;
                     margin-bottom: 16px;
@@ -3501,7 +3558,7 @@ async function init() {
                     margin-bottom: 10px;
                     font-size: 20px;
                 ">
-                    Не удалось войти
+                    Не удалось открыть приложение
                 </strong>
 
                 <div style="
@@ -3527,12 +3584,11 @@ async function init() {
                 >
                     Повторить
                 </button>
+
             </div>
         `;
 
-        document.body.appendChild(
-            message
-        );
+        document.body.appendChild(message);
 
         $("reloadAppButton")
             .addEventListener(
@@ -3541,9 +3597,7 @@ async function init() {
                     location.reload();
                 }
             );
-
     }
-
 }
 
 init();

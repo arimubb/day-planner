@@ -1,4 +1,4 @@
-const CACHE_NAME = "day-planner-v1";
+const CACHE_NAME = "day-planner-v2";
 
 const APP_FILES = [
     "/",
