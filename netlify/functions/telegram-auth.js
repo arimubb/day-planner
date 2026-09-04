@@ -171,7 +171,9 @@ function createSessionToken(userId) {
 
     return `${payloadString}.${signature}`;
 }
-
+function createHandoffCode() {
+    return crypto.randomBytes(32).toString("hex");
+}
 /* =========================================================
    HANDLER
 ========================================================= */
@@ -318,36 +320,38 @@ exports.handler = async (event) => {
             createSessionToken(
                 databaseUser.id
             );
+        const handoffCode = createHandoffCode();
 
+        const { error: handoffError } = await supabase
+            .from("telegram_handoffs")
+            .insert({
+                code: handoffCode,
+                telegram_user_id: databaseUser.id
+            });
+
+        if (handoffError) {
+            console.error(
+                "Handoff creation error:",
+                handoffError
+            );
+
+            return json(500, {
+                error: "Failed to create handoff"
+            });
+}
         return json(200, {
-
-            success: true,
-
-            sessionToken,
-
-            user: {
-
-                id:
-                    databaseUser.id,
-
-                telegramId:
-                    databaseUser.telegram_id,
-
-                firstName:
-                    databaseUser.first_name,
-
-                lastName:
-                    databaseUser.last_name,
-
-                username:
-                    databaseUser.username,
-
-                photoUrl:
-                    databaseUser.photo_url
-
-            }
-
-        });
+    success: true,
+    sessionToken,
+    handoffCode,
+    user: {
+        id: databaseUser.id,
+        telegramId: databaseUser.telegram_id,
+        firstName: databaseUser.first_name,
+        lastName: databaseUser.last_name,
+        username: databaseUser.username,
+        photoUrl: databaseUser.photo_url
+    }
+});
 
     } catch (error) {
 

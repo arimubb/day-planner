@@ -109,5 +109,6 @@ function getSessionToken(event) {
 
 module.exports = {
     verifySessionToken,
-    getSessionToken
+    getSessionToken,
+    createSessionToken
 };

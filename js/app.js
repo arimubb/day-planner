@@ -160,32 +160,37 @@ function setupHomeScreenButton() {
     }
 
     button.addEventListener(
-        "click",
-        () => {
-            const tg =
-                getTelegramWebApp();
+    "click",
+    () => {
+        const tg =
+            getTelegramWebApp();
 
-            /*
-             * ======================================
-             * TELEGRAM
-             * ======================================
-             *
-             * Открываем сайт во внешнем браузере.
-             */
+        if (isTelegramMiniApp()) {
+            let handoffCode = null;
+
+            try {
+                handoffCode =
+                    localStorage.getItem(
+                        "dayPlannerHandoffCode"
+                    );
+            } catch {}
 
             if (
-                isTelegramMiniApp() &&
+                handoffCode &&
                 tg &&
                 typeof tg.openLink === "function"
             ) {
-                try {
-                    tg.openLink(
-                        window.location.origin +
-                        window.location.pathname
+                const url =
+                    window.location.origin +
+                    window.location.pathname +
+                    "?handoff=" +
+                    encodeURIComponent(
+                        handoffCode
                     );
 
+                try {
+                    tg.openLink(url);
                     return;
-
                 } catch (error) {
                     console.warn(
                         "Не удалось открыть Safari:",
@@ -193,16 +198,11 @@ function setupHomeScreenButton() {
                     );
                 }
             }
-
-            /*
-             * ======================================
-             * SAFARI / PWA
-             * ======================================
-             */
-
-            openHomeScreenModal();
         }
-    );
+
+        openHomeScreenModal();
+    }
+);
 
     closeButton?.addEventListener(
         "click",
@@ -242,7 +242,84 @@ function setupHomeScreenButton() {
 /* =========================================================
 API
 ========================================================= */
+async function exchangeHandoffCode() {
+    const params =
+        new URLSearchParams(
+            window.location.search
+        );
 
+    const code =
+        params.get("handoff");
+
+    if (!code) {
+        return false;
+    }
+
+    const response =
+        await fetch(
+            `${API_BASE}/exchange-handoff`,
+            {
+                method: "POST",
+                headers: {
+                    "Content-Type":
+                        "application/json"
+                },
+                body: JSON.stringify({
+                    code
+                })
+            }
+        );
+
+    let data = {};
+
+    try {
+        data = await response.json();
+    } catch {}
+
+    if (!response.ok) {
+        throw new Error(
+            data.error ||
+            "Не удалось получить сессию"
+        );
+    }
+
+    if (!data.sessionToken) {
+        throw new Error(
+            "Сервер не вернул sessionToken"
+        );
+    }
+
+    sessionToken =
+        data.sessionToken;
+
+    telegramUser =
+        data.user || null;
+
+    localStorage.setItem(
+        SESSION_KEY,
+        sessionToken
+    );
+
+    if (telegramUser) {
+        localStorage.setItem(
+            USER_KEY,
+            JSON.stringify(
+                telegramUser
+            )
+        );
+    }
+
+    /*
+     * Удаляем handoff из URL
+     */
+    window.history.replaceState(
+        {},
+        document.title,
+        window.location.pathname
+    );
+
+    return true;
+}
 async function apiRequest(
     endpoint,
     options = {}
@@ -376,7 +453,14 @@ async function authenticateTelegram() {
 
     sessionToken = data.sessionToken;
     telegramUser = data.user || null;
-
+    if (data.handoffCode) {
+        try {
+            localStorage.setItem(
+                "dayPlannerHandoffCode",
+                data.handoffCode
+            );
+        } catch {}
+    }
     /*
      * Сохраняем сессию для Safari / PWA
      */
@@ -3466,33 +3550,48 @@ async function init() {
          */
 
         if (isTelegramMiniApp()) {
-            await authenticateTelegram();
 
-            renderTelegramUser();
+    await authenticateTelegram();
 
-            await loadTasksFromServer();
+    renderTelegramUser();
+
+    await loadTasksFromServer();
+
+} else {
+
+    /*
+     * Возможно, Safari только что пришёл
+     * из Telegram с одноразовым handoff-кодом.
+     */
+    const handoff =
+        new URLSearchParams(
+            window.location.search
+        ).get("handoff");
+
+    if (handoff) {
+
+        await exchangeHandoffCode();
+
+        renderTelegramUser();
+
+        await loadTasksFromServer();
+
+    } else {
+
+        const restored =
+            restoreLocalSession();
+
+        if (!restored) {
+            throw new Error(
+                "Сначала откройте приложение через Telegram и войдите в него."
+            );
         }
 
-        /*
-         * ==========================================
-         * SAFARI / PWA
-         * ==========================================
-         */
+        renderTelegramUser();
 
-        else {
-            const restored =
-                restoreLocalSession();
-
-            if (!restored) {
-                throw new Error(
-                    "Сначала откройте приложение через Telegram и войдите в него."
-                );
-            }
-
-            renderTelegramUser();
-
-            await loadTasksFromServer();
-        }
+        await loadTasksFromServer();
+    }
+}
 
         /*
          * ==========================================
