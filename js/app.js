@@ -117,7 +117,135 @@ function setupTelegram() {
 
     return tg;
 }
+/* =========================================================
+   ДОБАВЛЕНИЕ MINI APP НА ЭКРАН ДОМОЙ
+========================================================= */
 
+function setupHomeScreenButton() {
+
+    const button = $("addToHomeScreenButton");
+    const overlay = $("homeScreenOverlay");
+    const closeButton = $("closeHomeScreen");
+    const closeBottomButton = $("closeHomeScreenBottom");
+
+    if (!button || !overlay) {
+        return;
+    }
+
+
+    function openHomeScreenModal() {
+        overlay.classList.add("active");
+        document.body.classList.add("modal-open");
+    }
+
+
+    function closeHomeScreenModal() {
+        overlay.classList.remove("active");
+        document.body.classList.remove("modal-open");
+    }
+
+
+    button.addEventListener("click", () => {
+
+        const tg = getTelegramWebApp();
+
+        /*
+         * Если Telegram поддерживает
+         * официальное добавление Mini App
+         * на главный экран — вызываем его.
+         */
+        if (
+            tg &&
+            typeof tg.addToHomeScreen === "function"
+        ) {
+
+            try {
+                tg.addToHomeScreen();
+            } catch (error) {
+
+                console.warn(
+                    "Не удалось вызвать addToHomeScreen:",
+                    error
+                );
+
+            }
+
+        }
+
+        /*
+         * В любом случае показываем инструкцию.
+         * Это важно для iPhone и клиентов Telegram,
+         * где автоматический метод недоступен.
+         */
+        openHomeScreenModal();
+
+    });
+
+
+    closeButton?.addEventListener(
+        "click",
+        closeHomeScreenModal
+    );
+
+
+    closeBottomButton?.addEventListener(
+        "click",
+        closeHomeScreenModal
+    );
+
+
+    overlay.addEventListener("click", (event) => {
+
+        if (event.target === overlay) {
+            closeHomeScreenModal();
+        }
+
+    });
+
+
+    document.addEventListener("keydown", (event) => {
+
+        if (
+            event.key === "Escape" &&
+            overlay.classList.contains("active")
+        ) {
+            closeHomeScreenModal();
+        }
+
+    });
+
+
+    /*
+     * Telegram сообщает, если Mini App
+     * действительно был добавлен.
+     */
+    if (window.Telegram?.WebApp) {
+
+        try {
+
+            window.Telegram.WebApp.onEvent(
+                "homeScreenAdded",
+                () => {
+
+                    console.log(
+                        "Mini App добавлен на экран Домой"
+                    );
+
+                }
+            );
+
+        } catch (error) {
+
+            console.warn(
+                "Не удалось подключить homeScreenAdded:",
+                error
+            );
+
+        }
+
+    }
+
+}
 /* =========================================================
 API
 ========================================================= */
@@ -3314,7 +3442,7 @@ async function init() {
     loadTheme();
 
     updateDateUI();
-
+    setupHomeScreenButton();
     try {
 
         await authenticateTelegram();
