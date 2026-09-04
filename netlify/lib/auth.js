@@ -1,7 +1,12 @@
 const crypto = require("crypto");
 
+/* =========================================================
+   SESSION SECRET
+========================================================= */
+
 function getSessionSecret() {
-    const secret = process.env.TELEGRAM_BOT_TOKEN;
+    const secret =
+        process.env.TELEGRAM_BOT_TOKEN;
 
     if (!secret) {
         throw new Error(
@@ -12,32 +17,74 @@ function getSessionSecret() {
     return secret;
 }
 
+/* =========================================================
+   CREATE SESSION TOKEN
+========================================================= */
+
+function createSessionToken(userId) {
+    const payload = {
+        userId,
+        createdAt: Date.now()
+    };
+
+    const payloadString =
+        Buffer
+            .from(
+                JSON.stringify(payload)
+            )
+            .toString("base64url");
+
+    const signature =
+        crypto
+            .createHmac(
+                "sha256",
+                getSessionSecret()
+            )
+            .update(payloadString)
+            .digest("base64url");
+
+    return `${payloadString}.${signature}`;
+}
+
+/* =========================================================
+   VERIFY SESSION TOKEN
+========================================================= */
+
 function verifySessionToken(token) {
     if (!token) {
         return null;
     }
 
-    const parts = token.split(".");
+    const parts =
+        token.split(".");
 
     if (parts.length !== 2) {
         return null;
     }
 
-    const [payloadString, receivedSignature] = parts;
+    const [
+        payloadString,
+        receivedSignature
+    ] = parts;
 
-    const expectedSignature = crypto
-        .createHmac(
-            "sha256",
-            getSessionSecret()
-        )
-        .update(payloadString)
-        .digest("base64url");
+    const expectedSignature =
+        crypto
+            .createHmac(
+                "sha256",
+                getSessionSecret()
+            )
+            .update(payloadString)
+            .digest("base64url");
 
     const receivedBuffer =
-        Buffer.from(receivedSignature);
+        Buffer.from(
+            receivedSignature
+        );
 
     const expectedBuffer =
-        Buffer.from(expectedSignature);
+        Buffer.from(
+            expectedSignature
+        );
 
     if (
         receivedBuffer.length !==
@@ -56,21 +103,38 @@ function verifySessionToken(token) {
     }
 
     try {
-        const payload = JSON.parse(
-            Buffer
-                .from(payloadString, "base64url")
-                .toString("utf8")
-        );
+        const payload =
+            JSON.parse(
+                Buffer
+                    .from(
+                        payloadString,
+                        "base64url"
+                    )
+                    .toString("utf8")
+            );
 
         if (!payload.userId) {
             return null;
         }
 
-        const sessionAge =
-            Date.now() - Number(payload.createdAt);
+        if (!payload.createdAt) {
+            return null;
+        }
 
-        // Сессия действует 24 часа
-        if (sessionAge > 86400000) {
+        const sessionAge =
+            Date.now() -
+            Number(
+                payload.createdAt
+            );
+
+        /*
+         * Сессия действует 24 часа
+         */
+
+        if (
+            sessionAge >
+            86400000
+        ) {
             return null;
         }
 
@@ -86,6 +150,10 @@ function verifySessionToken(token) {
         return null;
     }
 }
+
+/* =========================================================
+   GET SESSION TOKEN
+========================================================= */
 
 function getSessionToken(event) {
     const authorization =
@@ -104,11 +172,17 @@ function getSessionToken(event) {
         return null;
     }
 
-    return authorization.slice(7).trim();
+    return authorization
+        .slice(7)
+        .trim();
 }
 
+/* =========================================================
+   EXPORT
+========================================================= */
+
 module.exports = {
+    createSessionToken,
     verifySessionToken,
-    getSessionToken,
-    createSessionToken
+    getSessionToken
 };
