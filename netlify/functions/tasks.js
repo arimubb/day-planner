@@ -1,5 +1,10 @@
 const { createClient } = require("@supabase/supabase-js");
 
+const {
+    verifySessionToken,
+    getSessionToken
+} = require("../lib/auth");
+
 const supabase = createClient(
     process.env.SUPABASE_URL,
     process.env.SUPABASE_SERVICE_ROLE_KEY
@@ -11,32 +16,23 @@ function json(statusCode, data) {
         headers: {
             "Content-Type": "application/json",
             "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Headers": "Content-Type",
-            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS"
+            "Access-Control-Allow-Headers":
+                "Content-Type, Authorization",
+            "Access-Control-Allow-Methods":
+                "GET, POST, PUT, DELETE, OPTIONS"
         },
         body: JSON.stringify(data)
     };
 }
 
-/*
- * Получаем Telegram ID.
- *
- * На этом этапе он приходит из заголовка,
- * который позже будет устанавливать наш frontend
- * после успешной авторизации через telegram-auth.js.
- */
-function getTelegramUserId(event) {
-    return (
-        event.headers?.["x-telegram-user-id"] ||
-        event.headers?.["X-Telegram-User-Id"]
-    );
-}
-
-async function getDatabaseUser(telegramId) {
-    const { data, error } = await supabase
+async function getDatabaseUser(userId) {
+    const {
+        data,
+        error
+    } = await supabase
         .from("telegram_users")
         .select("id, telegram_id")
-        .eq("telegram_id", telegramId)
+        .eq("id", userId)
         .single();
 
     if (error || !data) {
@@ -52,249 +48,390 @@ function normalizeTask(task) {
 
         title: task.title,
 
-        description: task.description || "",
+        description:
+            task.description || "",
 
-        date: task.task_date,
+        date:
+            task.task_date,
 
-        time: task.task_time
-            ? String(task.task_time).slice(0, 5)
-            : "",
+        time:
+            task.task_time
+                ? String(task.task_time).slice(0, 5)
+                : "",
 
-        repeat: task.repeat || "none",
+        repeat:
+            task.repeat || "none",
 
-        repeatDays: Array.isArray(task.repeat_days)
-            ? task.repeat_days
-            : [],
+        repeatDays:
+            Array.isArray(task.repeat_days)
+                ? task.repeat_days
+                : [],
 
-        completedDates: Array.isArray(task.completed_dates)
-            ? task.completed_dates
-            : [],
+        completedDates:
+            Array.isArray(task.completed_dates)
+                ? task.completed_dates
+                : [],
 
-        createdAt: task.created_at,
+        createdAt:
+            task.created_at,
 
-        updatedAt: task.updated_at
+        updatedAt:
+            task.updated_at
     };
 }
 
 exports.handler = async (event) => {
 
-    // CORS
-    if (event.httpMethod === "OPTIONS") {
+    if (
+        event.httpMethod ===
+        "OPTIONS"
+    ) {
         return json(204, {});
     }
 
     try {
 
-        /*
-         * Получаем Telegram ID.
-         */
-        const telegramId = getTelegramUserId(event);
+        /* ============================================
+           ПРОВЕРЯЕМ СЕССИЮ
+        ============================================ */
 
-        if (!telegramId) {
+        const sessionToken =
+            getSessionToken(event);
+
+        const session =
+            verifySessionToken(
+                sessionToken
+            );
+
+        if (!session) {
             return json(401, {
-                error: "Telegram user is not authenticated"
+                error:
+                    "Invalid or expired session"
             });
         }
 
-        /*
-         * Находим пользователя в telegram_users.
-         */
-        const user = await getDatabaseUser(telegramId);
+        const user =
+            await getDatabaseUser(
+                session.userId
+            );
 
         if (!user) {
             return json(401, {
-                error: "Telegram user not found"
+                error:
+                    "Telegram user not found"
             });
         }
 
-        /*
-         * =========================
-         * GET — получить задачи
-         * =========================
-         */
-        if (event.httpMethod === "GET") {
+        /* ============================================
+           GET — ПОЛУЧИТЬ ЗАДАЧИ
+        ============================================ */
 
-            const { data, error } = await supabase
+        if (
+            event.httpMethod ===
+            "GET"
+        ) {
+
+            const {
+                data,
+                error
+            } = await supabase
                 .from("tasks")
                 .select("*")
-                .eq("telegram_user_id", user.id)
-                .order("task_date", {
-                    ascending: true
-                })
-                .order("task_time", {
-                    ascending: true,
-                    nullsFirst: false
-                });
+                .eq(
+                    "telegram_user_id",
+                    user.id
+                )
+                .order(
+                    "task_date",
+                    {
+                        ascending: true
+                    }
+                )
+                .order(
+                    "task_time",
+                    {
+                        ascending: true,
+                        nullsFirst: false
+                    }
+                );
 
             if (error) {
-                console.error("GET tasks error:", error);
+
+                console.error(
+                    "GET tasks error:",
+                    error
+                );
 
                 return json(500, {
-                    error: "Failed to load tasks"
+                    error:
+                        "Failed to load tasks"
                 });
             }
 
             return json(200, {
-                tasks: (data || []).map(normalizeTask)
+                tasks:
+                    (data || [])
+                        .map(
+                            normalizeTask
+                        )
             });
         }
 
-        /*
-         * =========================
-         * POST — создать задачу
-         * =========================
-         */
-        if (event.httpMethod === "POST") {
+        /* ============================================
+           POST — СОЗДАТЬ ЗАДАЧУ
+        ============================================ */
+
+        if (
+            event.httpMethod ===
+            "POST"
+        ) {
 
             let body;
 
             try {
-                body = JSON.parse(event.body || "{}");
+
+                body =
+                    JSON.parse(
+                        event.body || "{}"
+                    );
+
             } catch {
+
                 return json(400, {
-                    error: "Invalid JSON"
+                    error:
+                        "Invalid JSON"
                 });
+
             }
 
-            const title = String(body.title || "").trim();
+            const title =
+                String(
+                    body.title || ""
+                ).trim();
 
             if (!title) {
+
                 return json(400, {
-                    error: "Task title is required"
+                    error:
+                        "Task title is required"
                 });
+
             }
 
             if (!body.date) {
+
                 return json(400, {
-                    error: "Task date is required"
+                    error:
+                        "Task date is required"
                 });
+
             }
 
-            const repeat = body.repeat || "none";
+            const repeat =
+                body.repeat || "none";
 
-            const repeatDays = Array.isArray(body.repeatDays)
-                ? body.repeatDays
-                : [];
+            const repeatDays =
+                Array.isArray(
+                    body.repeatDays
+                )
+                    ? body.repeatDays
+                    : [];
 
             const taskData = {
-                telegram_user_id: user.id,
+
+                telegram_user_id:
+                    user.id,
 
                 title,
 
-                description: String(
-                    body.description || ""
-                ),
+                description:
+                    String(
+                        body.description || ""
+                    ),
 
-                task_date: body.date,
+                task_date:
+                    body.date,
 
-                task_time: body.time || null,
+                task_time:
+                    body.time || null,
 
                 repeat,
 
-                repeat_days: repeatDays,
+                repeat_days:
+                    repeatDays,
 
-                completed_dates: []
+                completed_dates:
+                    []
+
             };
 
-            const { data, error } = await supabase
+            const {
+                data,
+                error
+            } = await supabase
                 .from("tasks")
                 .insert(taskData)
                 .select("*")
                 .single();
 
             if (error) {
-                console.error("POST tasks error:", error);
+
+                console.error(
+                    "POST tasks error:",
+                    error
+                );
 
                 return json(500, {
-                    error: "Failed to create task"
+                    error:
+                        "Failed to create task"
                 });
             }
 
             return json(201, {
-                task: normalizeTask(data)
+                task:
+                    normalizeTask(data)
             });
         }
 
-        /*
-         * =========================
-         * PUT — изменить задачу
-         * =========================
-         */
-        if (event.httpMethod === "PUT") {
+        /* ============================================
+           PUT — ИЗМЕНИТЬ ЗАДАЧУ
+        ============================================ */
+
+        if (
+            event.httpMethod ===
+            "PUT"
+        ) {
 
             const taskId =
-                event.queryStringParameters?.id;
+                event.queryStringParameters
+                    ?.id;
 
             if (!taskId) {
+
                 return json(400, {
-                    error: "Task id is required"
+                    error:
+                        "Task id is required"
                 });
+
             }
 
             let body;
 
             try {
-                body = JSON.parse(event.body || "{}");
+
+                body =
+                    JSON.parse(
+                        event.body || "{}"
+                    );
+
             } catch {
+
                 return json(400, {
-                    error: "Invalid JSON"
+                    error:
+                        "Invalid JSON"
                 });
+
             }
 
             const updateData = {};
 
-            if (body.title !== undefined) {
+            if (
+                body.title !==
+                undefined
+            ) {
 
                 const title =
-                    String(body.title).trim();
+                    String(
+                        body.title
+                    ).trim();
 
                 if (!title) {
+
                     return json(400, {
-                        error: "Task title cannot be empty"
+                        error:
+                            "Task title cannot be empty"
                     });
+
                 }
 
-                updateData.title = title;
+                updateData.title =
+                    title;
             }
 
-            if (body.description !== undefined) {
+            if (
+                body.description !==
+                undefined
+            ) {
+
                 updateData.description =
-                    String(body.description || "");
+                    String(
+                        body.description ||
+                        ""
+                    );
             }
 
-            if (body.date !== undefined) {
-                updateData.task_date = body.date;
+            if (
+                body.date !==
+                undefined
+            ) {
+
+                updateData.task_date =
+                    body.date;
             }
 
-            if (body.time !== undefined) {
+            if (
+                body.time !==
+                undefined
+            ) {
+
                 updateData.task_time =
                     body.time || null;
             }
 
-            if (body.repeat !== undefined) {
+            if (
+                body.repeat !==
+                undefined
+            ) {
+
                 updateData.repeat =
                     body.repeat;
             }
 
-            if (body.repeatDays !== undefined) {
+            if (
+                body.repeatDays !==
+                undefined
+            ) {
+
                 updateData.repeat_days =
-                    Array.isArray(body.repeatDays)
+                    Array.isArray(
+                        body.repeatDays
+                    )
                         ? body.repeatDays
                         : [];
             }
 
             updateData.updated_at =
-                new Date().toISOString();
+                new Date()
+                    .toISOString();
 
-            const { data, error } = await supabase
+            const {
+                data,
+                error
+            } = await supabase
                 .from("tasks")
                 .update(updateData)
                 .eq("id", taskId)
-                .eq("telegram_user_id", user.id)
+                .eq(
+                    "telegram_user_id",
+                    user.id
+                )
                 .select("*")
                 .single();
 
-            if (error || !data) {
+            if (
+                error ||
+                !data
+            ) {
 
                 console.error(
                     "PUT tasks error:",
@@ -302,40 +439,58 @@ exports.handler = async (event) => {
                 );
 
                 return json(404, {
-                    error: "Task not found"
+                    error:
+                        "Task not found"
                 });
+
             }
 
             return json(200, {
-                task: normalizeTask(data)
+                task:
+                    normalizeTask(data)
             });
         }
 
-        /*
-         * =========================
-         * DELETE — удалить задачу
-         * =========================
-         */
-        if (event.httpMethod === "DELETE") {
+        /* ============================================
+           DELETE — УДАЛИТЬ ЗАДАЧУ
+        ============================================ */
+
+        if (
+            event.httpMethod ===
+            "DELETE"
+        ) {
 
             const taskId =
-                event.queryStringParameters?.id;
+                event.queryStringParameters
+                    ?.id;
 
             if (!taskId) {
+
                 return json(400, {
-                    error: "Task id is required"
+                    error:
+                        "Task id is required"
                 });
+
             }
 
-            const { data, error } = await supabase
+            const {
+                data,
+                error
+            } = await supabase
                 .from("tasks")
                 .delete()
                 .eq("id", taskId)
-                .eq("telegram_user_id", user.id)
+                .eq(
+                    "telegram_user_id",
+                    user.id
+                )
                 .select("id")
                 .single();
 
-            if (error || !data) {
+            if (
+                error ||
+                !data
+            ) {
 
                 console.error(
                     "DELETE tasks error:",
@@ -343,22 +498,25 @@ exports.handler = async (event) => {
                 );
 
                 return json(404, {
-                    error: "Task not found"
+                    error:
+                        "Task not found"
                 });
+
             }
 
             return json(200, {
+
                 success: true,
 
-                id: String(data.id)
+                id:
+                    String(data.id)
+
             });
         }
 
-        /*
-         * Другие HTTP методы запрещены.
-         */
         return json(405, {
-            error: "Method not allowed"
+            error:
+                "Method not allowed"
         });
 
     } catch (error) {
@@ -369,7 +527,9 @@ exports.handler = async (event) => {
         );
 
         return json(500, {
-            error: "Internal server error"
+            error:
+                "Internal server error"
         });
+
     }
 };

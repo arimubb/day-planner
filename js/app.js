@@ -1,8 +1,13 @@
-const STORAGE_KEY = "dayPlannerTasks";
 const THEME_KEY = "dayPlannerTheme";
+const SESSION_KEY = "dayPlannerSession";
+
+const API_BASE = "/.netlify/functions";
 
 let selectedDate = getTodayKey();
-let tasks = loadTasks();
+let tasks = [];
+
+let sessionToken = null;
+let telegramUser = null;
 
 let selectedRepeatDays = [];
 let openedTaskId = null;
@@ -16,6 +21,12 @@ DOM
 ========================================================= */
 
 const $ = id => document.getElementById(id);
+
+const userProfile = $("userProfile");
+const userName = $("userName");
+const userUsername = $("userUsername");
+const userAvatar = $("userAvatar");
+const userAvatarFallback = $("userAvatarFallback");
 
 const daysScroll = $("daysScroll");
 const timelineGrid = $("timelineGrid");
@@ -62,167 +73,445 @@ const closeDetails = $("closeDetails");
 const modalTitle = $("modalTitle");
 const saveTaskButton = $("saveTaskButton");
 
+const taskSearch = $("taskSearch");
+const taskSort = $("taskSort");
+
+/* =========================================================
+TELEGRAM
+========================================================= */
+
+function getTelegramWebApp() {
+
+    if (
+        window.Telegram &&
+        window.Telegram.WebApp
+    ) {
+        return window.Telegram.WebApp;
+    }
+
+    return null;
+}
+
+function setupTelegram() {
+
+    const tg = getTelegramWebApp();
+
+    if (!tg) {
+        console.warn(
+            "Telegram WebApp API не найден."
+        );
+
+        return null;
+    }
+
+    tg.ready();
+
+    try {
+        tg.expand();
+    } catch (error) {
+        console.warn(
+            "Не удалось расширить Telegram WebApp:",
+            error
+        );
+    }
+
+    return tg;
+}
+
+/* =========================================================
+API
+========================================================= */
+
+async function apiRequest(
+    endpoint,
+    options = {}
+) {
+
+    if (!sessionToken) {
+
+        throw new Error(
+            "Пользователь не авторизован"
+        );
+
+    }
+
+    const headers = {
+        ...(options.headers || {}),
+        "Authorization":
+            `Bearer ${sessionToken}`
+    };
+
+    if (
+        options.body &&
+        !headers["Content-Type"]
+    ) {
+
+        headers["Content-Type"] =
+            "application/json";
+
+    }
+
+    const response =
+        await fetch(
+            `${API_BASE}${endpoint}`,
+            {
+                ...options,
+                headers
+            }
+        );
+
+    let data = {};
+
+    try {
+
+        data =
+            await response.json();
+
+    } catch {
+
+        data = {};
+
+    }
+
+    if (!response.ok) {
+
+        if (
+            response.status === 401
+        ) {
+
+            sessionToken = null;
+
+            try {
+                sessionStorage.removeItem(
+                    SESSION_KEY
+                );
+            } catch {}
+
+        }
+
+        throw new Error(
+            data.error ||
+            `Ошибка сервера: ${response.status}`
+        );
+
+    }
+
+    return data;
+}
+
+/* =========================================================
+TELEGRAM AUTH
+========================================================= */
+
+async function authenticateTelegram() {
+
+    const tg =
+        setupTelegram();
+
+    if (!tg) {
+
+        throw new Error(
+            "Откройте приложение внутри Telegram."
+        );
+
+    }
+
+    const initData =
+        tg.initData;
+
+    if (!initData) {
+
+        throw new Error(
+            "Telegram не передал данные авторизации."
+        );
+
+    }
+
+    const response =
+        await fetch(
+            `${API_BASE}/telegram-auth`,
+            {
+                method: "POST",
+
+                headers: {
+                    "Content-Type":
+                        "application/json"
+                },
+
+                body: JSON.stringify({
+                    initData
+                })
+            }
+        );
+
+    let data = {};
+
+    try {
+
+        data =
+            await response.json();
+
+    } catch {
+
+        data = {};
+
+    }
+
+    if (!response.ok) {
+
+        throw new Error(
+            data.error ||
+            "Не удалось авторизоваться через Telegram."
+        );
+
+    }
+
+    if (
+        !data.sessionToken
+    ) {
+
+        throw new Error(
+            "Сервер не вернул sessionToken."
+        );
+
+    }
+
+    sessionToken =
+        data.sessionToken;
+
+    telegramUser =
+        data.user || null;
+
+    try {
+
+        sessionStorage.setItem(
+            SESSION_KEY,
+            sessionToken
+        );
+
+    } catch {}
+
+    return data;
+
+}
+
+/* =========================================================
+LOAD TASKS
+========================================================= */
+
+async function loadTasksFromServer() {
+
+    const data =
+        await apiRequest(
+            "/tasks",
+            {
+                method: "GET"
+            }
+        );
+
+    tasks =
+        Array.isArray(data.tasks)
+            ? data.tasks
+            : [];
+
+    normalizeTasks();
+
+}
+
+/* =========================================================
+NORMALIZE TASKS
+========================================================= */
+function renderTelegramUser() {
+    if (!telegramUser) return;
+
+    const firstName = telegramUser.firstName || "Пользователь";
+    const lastName = telegramUser.lastName || "";
+    const username = telegramUser.username || "";
+
+    const fullName = `${firstName} ${lastName}`.trim();
+
+    userName.textContent = fullName || "Пользователь";
+
+    if (username) {
+        userUsername.textContent = `@${username}`;
+    } else {
+        userUsername.textContent = "";
+    }
+
+    const photoUrl = telegramUser.photoUrl;
+
+    if (photoUrl) {
+        userAvatar.src = photoUrl;
+        userAvatar.classList.remove("hidden");
+        userAvatarFallback.classList.add("hidden");
+    } else {
+        userAvatar.classList.add("hidden");
+
+        userAvatarFallback.textContent =
+            firstName.charAt(0).toUpperCase();
+
+        userAvatarFallback.classList.remove("hidden");
+    }
+}
+function normalizeTasks() {
+
+    tasks =
+        tasks.map(task => {
+
+            if (
+                !Array.isArray(
+                    task.completedDates
+                )
+            ) {
+
+                task.completedDates = [];
+
+            }
+
+            if (!task.repeat) {
+                task.repeat = "none";
+            }
+
+            if (
+                !Array.isArray(
+                    task.repeatDays
+                )
+            ) {
+
+                task.repeatDays = [];
+
+            }
+
+            if (
+                typeof task.description !==
+                "string"
+            ) {
+
+                task.description = "";
+
+            }
+
+            if (
+                typeof task.time !==
+                "string"
+            ) {
+
+                task.time = "";
+
+            }
+
+            return task;
+
+        });
+
+}
+
 /* =========================================================
 DATE
 ========================================================= */
 
 function getTodayKey() {
-return getDateKey(new Date());
+    return getDateKey(new Date());
 }
 
 function getDateKey(date) {
 
-const year = date.getFullYear();
+    const year =
+        date.getFullYear();
 
-const month =
-    String(date.getMonth() + 1).padStart(2, "0");
+    const month =
+        String(
+            date.getMonth() + 1
+        ).padStart(2, "0");
 
-const day =
-    String(date.getDate()).padStart(2, "0");
+    const day =
+        String(
+            date.getDate()
+        ).padStart(2, "0");
 
-return `${year}-${month}-${day}`;
-
+    return `${year}-${month}-${day}`;
 }
 
 function dateFromKey(key) {
 
-const [year, month, day] =
-    key.split("-").map(Number);
+    const [
+        year,
+        month,
+        day
+    ] =
+        key.split("-")
+            .map(Number);
 
-return new Date(year, month - 1, day);
-
+    return new Date(
+        year,
+        month - 1,
+        day
+    );
 }
 
-function addDays(date, amount) {
+function addDays(
+    date,
+    amount
+) {
 
-const result = new Date(date);
+    const result =
+        new Date(date);
 
-result.setDate(
-    result.getDate() + amount
-);
+    result.setDate(
+        result.getDate() + amount
+    );
 
-return result;
-
+    return result;
 }
 
 function formatFullDate(key) {
 
-return dateFromKey(key).toLocaleDateString(
-    "ru-RU",
-    {
-        weekday: "long",
-        day: "numeric",
-        month: "long",
-        year: "numeric"
-    }
-);
-
+    return dateFromKey(key)
+        .toLocaleDateString(
+            "ru-RU",
+            {
+                weekday: "long",
+                day: "numeric",
+                month: "long",
+                year: "numeric"
+            }
+        );
 }
 
 function formatShortDate(key) {
 
-return dateFromKey(key).toLocaleDateString(
-    "ru-RU",
-    {
-        day: "numeric",
-        month: "short"
-    }
-).replace(".", "");
-
+    return dateFromKey(key)
+        .toLocaleDateString(
+            "ru-RU",
+            {
+                day: "numeric",
+                month: "short"
+            }
+        )
+        .replace(".", "");
 }
 
 function capitalize(text) {
 
-if (!text) return "";
+    if (!text) return "";
 
-return text.charAt(0).toUpperCase()
-    + text.slice(1);
-
+    return (
+        text.charAt(0).toUpperCase() +
+        text.slice(1)
+    );
 }
 
 function getDayName(date) {
 
-return date.toLocaleDateString(
-    "ru-RU",
-    {
-        weekday: "short"
-    }
-)
-.replace(".", "")
-.slice(0, 2);
-
-}
-
-/* =========================================================
-STORAGE
-========================================================= */
-
-function loadTasks() {
-
-try {
-
-    const saved =
-        localStorage.getItem(STORAGE_KEY);
-
-    if (!saved) return [];
-
-    const parsed = JSON.parse(saved);
-
-    if (!Array.isArray(parsed)) return [];
-
-    return parsed.map(task => {
-
-        if (!Array.isArray(task.completedDates)) {
-
-            task.completedDates =
-                task.completed
-                    ? [task.date]
-                    : [];
-        }
-
-        if (!task.repeat) {
-            task.repeat = "none";
-        }
-
-        if (!Array.isArray(task.repeatDays)) {
-            task.repeatDays = [];
-        }
-
-        if (!task.description) {
-            task.description = "";
-        }
-
-        if (!task.time) {
-            task.time = "";
-        }
-
-        if (!task.createdAt) {
-            task.createdAt = Date.now();
-        }
-
-        return task;
-
-    });
-
-} catch (error) {
-
-    console.error(
-        "Ошибка загрузки задач:",
-        error
-    );
-
-    return [];
-}
-
-}
-
-function saveTasks() {
-
-localStorage.setItem(
-    STORAGE_KEY,
-    JSON.stringify(tasks)
-);
-
+    return date
+        .toLocaleDateString(
+            "ru-RU",
+            {
+                weekday: "short"
+            }
+        )
+        .replace(".", "")
+        .slice(0, 2);
 }
 
 /* =========================================================
@@ -231,66 +520,77 @@ THEME
 
 function loadTheme() {
 
-const theme =
-    localStorage.getItem(THEME_KEY);
-
-const dark = theme === "dark";
-
-document.body.classList.toggle(
-    "dark",
-    dark
-);
-
-themeButton.textContent =
-    dark ? "☀" : "☾";
-
-updateThemeColor(
-    dark ? "#101010" : "#ffffff"
-);
-
-}
-
-function updateThemeColor(color) {
-
-const meta =
-    document.querySelector(
-        'meta[name="theme-color"]'
-    );
-
-if (meta) {
-    meta.setAttribute(
-        "content",
-        color
-    );
-}
-
-}
-
-themeButton.addEventListener(
-"click",
-() => {
+    const theme =
+        localStorage.getItem(
+            THEME_KEY
+        );
 
     const dark =
-        !document.body.classList.contains("dark");
+        theme === "dark";
 
     document.body.classList.toggle(
         "dark",
         dark
     );
 
-    localStorage.setItem(
-        THEME_KEY,
-        dark ? "dark" : "light"
-    );
-
     themeButton.textContent =
         dark ? "☀" : "☾";
 
     updateThemeColor(
-        dark ? "#101010" : "#ffffff"
+        dark
+            ? "#101010"
+            : "#ffffff"
     );
 }
 
+function updateThemeColor(color) {
+
+    const meta =
+        document.querySelector(
+            'meta[name="theme-color"]'
+        );
+
+    if (meta) {
+
+        meta.setAttribute(
+            "content",
+            color
+        );
+
+    }
+}
+
+themeButton.addEventListener(
+    "click",
+    () => {
+
+        const dark =
+            !document.body.classList.contains(
+                "dark"
+            );
+
+        document.body.classList.toggle(
+            "dark",
+            dark
+        );
+
+        localStorage.setItem(
+            THEME_KEY,
+            dark
+                ? "dark"
+                : "light"
+        );
+
+        themeButton.textContent =
+            dark ? "☀" : "☾";
+
+        updateThemeColor(
+            dark
+                ? "#101010"
+                : "#ffffff"
+        );
+
+    }
 );
 
 /* =========================================================
@@ -298,56 +598,70 @@ NAVIGATION
 ========================================================= */
 
 document
-.querySelectorAll(".nav-button")
-.forEach(button => {
-
-    button.addEventListener(
-        "click",
-        () => {
-
-            switchScreen(
-                button.dataset.screen
-            );
-
-        }
-    );
-
-});
-
-function switchScreen(screenId) {
-
-document
-    .querySelectorAll(".app-screen")
-    .forEach(screen => {
-
-        screen.classList.toggle(
-            "active",
-            screen.id === screenId
-        );
-
-    });
-
-
-document
     .querySelectorAll(".nav-button")
     .forEach(button => {
 
-        button.classList.toggle(
-            "active",
-            button.dataset.screen === screenId
+        button.addEventListener(
+            "click",
+            () => {
+
+                switchScreen(
+                    button.dataset.screen
+                );
+
+            }
         );
 
     });
 
+function switchScreen(
+    screenId
+) {
 
-if (screenId === "tasksScreen") {
-    renderAllTasks();
-}
+    document
+        .querySelectorAll(
+            ".app-screen"
+        )
+        .forEach(screen => {
 
+            screen.classList.toggle(
+                "active",
+                screen.id === screenId
+            );
 
-if (screenId === "analyticsScreen") {
-    renderAnalytics();
-}
+        });
+
+    document
+        .querySelectorAll(
+            ".nav-button"
+        )
+        .forEach(button => {
+
+            button.classList.toggle(
+                "active",
+                button.dataset.screen ===
+                screenId
+            );
+
+        });
+
+    if (
+        screenId ===
+        "tasksScreen"
+    ) {
+
+        renderAllTasks();
+
+    }
+
+    if (
+        screenId ===
+        "analyticsScreen"
+    ) {
+
+        renderAnalytics();
+
+    }
 
 }
 
@@ -357,167 +671,213 @@ CALENDAR
 
 function renderCalendar() {
 
-daysScroll.innerHTML = "";
+    daysScroll.innerHTML = "";
 
-const centerDate =
-    dateFromKey(selectedDate);
+    const centerDate =
+        dateFromKey(
+            selectedDate
+        );
 
-for (let i = -30; i < 60; i++) {
+    for (
+        let i = -30;
+        i < 60;
+        i++
+    ) {
 
-    const date =
-        addDays(centerDate, i);
+        const date =
+            addDays(
+                centerDate,
+                i
+            );
 
-    const key =
-        getDateKey(date);
+        const key =
+            getDateKey(date);
 
-    const button =
-        document.createElement("button");
+        const button =
+            document.createElement(
+                "button"
+            );
 
-    button.type = "button";
-    button.className = "day-button";
+        button.type = "button";
+        button.className =
+            "day-button";
 
-    if (key === getTodayKey()) {
-        button.classList.add("today");
-    }
+        if (
+            key ===
+            getTodayKey()
+        ) {
 
-    if (key === selectedDate) {
-        button.classList.add("selected");
-    }
-
-    button.innerHTML = `
-        <span class="day-name">
-            ${capitalize(getDayName(date))}
-        </span>
-
-        <span class="day-number">
-            ${date.getDate()}
-        </span>
-
-        <span class="month-name">
-            ${date.toLocaleDateString(
-                "ru-RU",
-                { month: "short" }
-            ).replace(".", "")}
-        </span>
-    `;
-
-    button.addEventListener(
-        "click",
-        () => {
-
-            selectedDate = key;
-
-            refreshDay();
-
-            setTimeout(
-                centerSelectedDay,
-                20
+            button.classList.add(
+                "today"
             );
 
         }
+
+        if (
+            key ===
+            selectedDate
+        ) {
+
+            button.classList.add(
+                "selected"
+            );
+
+        }
+
+        button.innerHTML = `
+
+            <span class="day-name">
+                ${capitalize(
+                    getDayName(date)
+                )}
+            </span>
+
+            <span class="day-number">
+                ${date.getDate()}
+            </span>
+
+            <span class="month-name">
+                ${date
+                    .toLocaleDateString(
+                        "ru-RU",
+                        {
+                            month: "short"
+                        }
+                    )
+                    .replace(".", "")
+                }
+            </span>
+
+        `;
+
+        button.addEventListener(
+            "click",
+            () => {
+
+                selectedDate =
+                    key;
+
+                refreshDay();
+
+                setTimeout(
+                    centerSelectedDay,
+                    20
+                );
+
+            }
+        );
+
+        daysScroll.appendChild(
+            button
+        );
+
+    }
+
+    setTimeout(
+        centerSelectedDay,
+        10
     );
-
-    daysScroll.appendChild(button);
-}
-
-setTimeout(
-    centerSelectedDay,
-    10
-);
-
 }
 
 function centerSelectedDay() {
 
-const selected =
-    daysScroll.querySelector(
-        ".day-button.selected"
-    );
+    const selected =
+        daysScroll.querySelector(
+            ".day-button.selected"
+        );
 
-if (!selected) return;
+    if (!selected) return;
 
-selected.scrollIntoView({
-    behavior: "auto",
-    block: "nearest",
-    inline: "center"
-});
-
+    selected.scrollIntoView({
+        behavior: "auto",
+        block: "nearest",
+        inline: "center"
+    });
 }
 
 function updateDateUI() {
 
-const full =
-    formatFullDate(selectedDate);
+    const full =
+        formatFullDate(
+            selectedDate
+        );
 
-selectedDateText.textContent =
-    capitalize(full);
+    selectedDateText.textContent =
+        capitalize(full);
 
-datePicker.value =
-    selectedDate;
+    datePicker.value =
+        selectedDate;
 
-todayLabel.textContent =
-    selectedDate === getTodayKey()
-        ? "Сегодня"
-        : capitalize(full);
+    todayLabel.textContent =
+        selectedDate ===
+        getTodayKey()
 
+            ? "Сегодня"
+
+            : capitalize(full);
 }
 
 $("prevDays").addEventListener(
-"click",
-() => {
+    "click",
+    () => {
 
-    selectedDate =
-        getDateKey(
-            addDays(
-                dateFromKey(selectedDate),
-                -1
-            )
-        );
+        selectedDate =
+            getDateKey(
+                addDays(
+                    dateFromKey(
+                        selectedDate
+                    ),
+                    -1
+                )
+            );
 
-    refreshDay();
+        refreshDay();
 
-}
-
+    }
 );
 
 $("nextDays").addEventListener(
-"click",
-() => {
+    "click",
+    () => {
 
-    selectedDate =
-        getDateKey(
-            addDays(
-                dateFromKey(selectedDate),
-                1
-            )
-        );
+        selectedDate =
+            getDateKey(
+                addDays(
+                    dateFromKey(
+                        selectedDate
+                    ),
+                    1
+                )
+            );
 
-    refreshDay();
+        refreshDay();
 
-}
-
+    }
 );
 
 datePicker.addEventListener(
-"change",
-() => {
+    "change",
+    () => {
 
-    if (!datePicker.value) return;
+        if (!datePicker.value) {
+            return;
+        }
 
-    selectedDate =
-        datePicker.value;
+        selectedDate =
+            datePicker.value;
 
-    refreshDay();
+        refreshDay();
 
-}
-
+    }
 );
 
 function refreshDay() {
 
-updateDateUI();
-renderCalendar();
-renderTasks();
+    updateDateUI();
+
+    renderCalendar();
+
+    renderTasks();
 
 }
 
@@ -527,166 +887,228 @@ TIMELINE
 
 function getHourHeight() {
 
-if (window.innerWidth <= 600) {
-    return 80;
-}
+    if (
+        window.innerWidth <= 600
+    ) {
 
-if (window.innerWidth <= 800) {
-    return 90;
-}
+        return 80;
 
-return 100;
+    }
 
+    if (
+        window.innerWidth <= 800
+    ) {
+
+        return 90;
+
+    }
+
+    return 100;
 }
 
 function renderTimelineGrid() {
 
-timelineGrid.innerHTML = "";
+    timelineGrid.innerHTML = "";
 
-const hourHeight =
-    getHourHeight();
+    const hourHeight =
+        getHourHeight();
 
+    const axis =
+        document.createElement(
+            "div"
+        );
 
-const axis =
-    document.createElement("div");
+    axis.className =
+        "timeline-axis";
 
-axis.className =
-    "timeline-axis";
+    timelineGrid.appendChild(
+        axis
+    );
 
-timelineGrid.appendChild(axis);
+    for (
+        let hour = 0;
+        hour <= 24;
+        hour++
+    ) {
 
+        const line =
+            document.createElement(
+                "div"
+            );
 
-for (
-    let hour = 0;
-    hour <= 24;
-    hour++
-) {
+        line.className =
+            "hour-line";
 
-    const line =
-        document.createElement("div");
-
-    line.className =
-        "hour-line";
-
-    line.style.top =
-        `${hour * hourHeight}px`;
-
-    timelineGrid.appendChild(line);
-
-
-    if (hour < 24) {
-
-        const label =
-            document.createElement("div");
-
-        label.className =
-            "hour-label";
-
-        label.style.top =
+        line.style.top =
             `${hour * hourHeight}px`;
 
-        label.textContent =
-            `${String(hour).padStart(2, "0")}:00`;
+        timelineGrid.appendChild(
+            line
+        );
 
-        timelineGrid.appendChild(label);
+        if (hour < 24) {
+
+            const label =
+                document.createElement(
+                    "div"
+                );
+
+            label.className =
+                "hour-label";
+
+            label.style.top =
+                `${hour * hourHeight}px`;
+
+            label.textContent =
+                `${String(hour).padStart(
+                    2,
+                    "0"
+                )}:00`;
+
+            timelineGrid.appendChild(
+                label
+            );
+
+        }
+
     }
-
-}
-
 }
 
 function timeToMinutes(time) {
 
-if (!time) return null;
+    if (!time) return null;
 
-const parts = time.split(":");
+    const parts =
+        time.split(":");
 
-if (parts.length !== 2) return null;
+    if (
+        parts.length !== 2
+    ) {
 
-const hours = Number(parts[0]);
-const minutes = Number(parts[1]);
+        return null;
 
-if (
-    Number.isNaN(hours) ||
-    Number.isNaN(minutes)
-) {
-    return null;
-}
+    }
 
-return hours * 60 + minutes;
+    const hours =
+        Number(parts[0]);
 
+    const minutes =
+        Number(parts[1]);
+
+    if (
+        Number.isNaN(hours) ||
+        Number.isNaN(minutes)
+    ) {
+
+        return null;
+
+    }
+
+    return (
+        hours * 60 +
+        minutes
+    );
 }
 
 /* =========================================================
 TASK DATE LOGIC
 ========================================================= */
 
-function taskBelongsToDate(task, dateKey) {
-
-if (
-    !task.repeat ||
-    task.repeat === "none"
+function taskBelongsToDate(
+    task,
+    dateKey
 ) {
 
-    return task.date === dateKey;
-}
+    if (
+        !task.repeat ||
+        task.repeat === "none"
+    ) {
 
+        return (
+            task.date ===
+            dateKey
+        );
 
-if (task.repeat === "daily") {
-
-    return dateKey >= task.date;
-}
-
-
-if (task.repeat === "weekly") {
-
-    if (dateKey < task.date) {
-        return false;
     }
 
-    const date =
-        dateFromKey(dateKey);
+    if (
+        task.repeat ===
+        "daily"
+    ) {
 
-    return (
-        Array.isArray(task.repeatDays) &&
-        task.repeatDays.includes(
-            date.getDay()
-        )
+        return (
+            dateKey >=
+            task.date
+        );
+
+    }
+
+    if (
+        task.repeat ===
+        "weekly"
+    ) {
+
+        if (
+            dateKey <
+            task.date
+        ) {
+
+            return false;
+
+        }
+
+        const date =
+            dateFromKey(
+                dateKey
+            );
+
+        return (
+            Array.isArray(
+                task.repeatDays
+            ) &&
+            task.repeatDays.includes(
+                date.getDay()
+            )
+        );
+
+    }
+
+    return false;
+}
+
+function getTasksForDate(
+    dateKey
+) {
+
+    return tasks.filter(
+        task =>
+            taskBelongsToDate(
+                task,
+                dateKey
+            )
     );
-}
-
-
-return false;
-
-}
-
-function getTasksForDate(dateKey) {
-
-return tasks.filter(
-    task =>
-        taskBelongsToDate(
-            task,
-            dateKey
-        )
-);
-
 }
 
 function getTasksForSelectedDate() {
 
-return getTasksForDate(
-    selectedDate
-);
-
+    return getTasksForDate(
+        selectedDate
+    );
 }
 
-function isCompleted(task, dateKey) {
+function isCompleted(
+    task,
+    dateKey
+) {
 
-return (
-    Array.isArray(task.completedDates) &&
-    task.completedDates.includes(dateKey)
-);
-
+    return (
+        Array.isArray(
+            task.completedDates
+        ) &&
+        task.completedDates.includes(
+            dateKey
+        )
+    );
 }
 
 /* =========================================================
@@ -695,156 +1117,287 @@ TIMELINE TASKS
 
 function sortTasks(list) {
 
-return [...list].sort(
-    (a, b) => {
+    return [...list].sort(
+        (a, b) => {
 
-        if (!a.time && !b.time) return 0;
-        if (!a.time) return 1;
-        if (!b.time) return -1;
+            if (
+                !a.time &&
+                !b.time
+            ) {
 
-        return a.time.localeCompare(
-            b.time
-        );
+                return 0;
 
-    }
-);
+            }
 
+            if (!a.time) {
+                return 1;
+            }
+
+            if (!b.time) {
+                return -1;
+            }
+
+            return a.time.localeCompare(
+                b.time
+            );
+
+        }
+    );
 }
 
-function calculateTaskLanes(list) {
+function calculateTaskLanes(
+    list
+) {
 
-const lanes = [];
-const result = [];
+    const lanes = [];
+    const result = [];
 
-const sorted =
-    sortTasks(list);
+    const sorted =
+        sortTasks(list);
 
-const duration = 60;
+    const duration = 60;
 
+    sorted.forEach(task => {
 
-sorted.forEach(task => {
+        const start =
+            timeToMinutes(
+                task.time
+            );
 
-    const start =
-        timeToMinutes(task.time);
+        const end =
+            start + duration;
 
-    const end =
-        start + duration;
+        let lane = 0;
 
-    let lane = 0;
+        while (true) {
 
-    while (true) {
+            if (
+                typeof lanes[lane] ===
+                "undefined"
+            ) {
 
-        if (
-            typeof lanes[lane] ===
-            "undefined"
-        ) {
+                lanes[lane] =
+                    end;
 
-            lanes[lane] = end;
-            break;
+                break;
+
+            }
+
+            if (
+                start >=
+                lanes[lane]
+            ) {
+
+                lanes[lane] =
+                    end;
+
+                break;
+
+            }
+
+            lane++;
+
         }
 
-        if (
-            start >= lanes[lane]
-        ) {
+        result.push({
+            task,
+            lane
+        });
 
-            lanes[lane] = end;
-            break;
-        }
-
-        lane++;
-    }
-
-    result.push({
-        task,
-        lane
     });
 
-});
-
-
-return {
-    items: result,
-    laneCount:
-        Math.max(lanes.length, 1)
-};
-
+    return {
+        items: result,
+        laneCount:
+            Math.max(
+                lanes.length,
+                1
+            )
+    };
 }
 
 function createTaskCard(
-task,
-lane,
-laneCount
+    task,
+    lane,
+    laneCount
 ) {
 
-const card =
-    document.createElement("div");
+    const card =
+        document.createElement(
+            "div"
+        );
 
-card.className =
-    "task-card";
+    card.className =
+        "task-card";
 
-if (
-    isCompleted(
-        task,
-        selectedDate
-    )
-) {
+    if (
+        isCompleted(
+            task,
+            selectedDate
+        )
+    ) {
 
-    card.classList.add("completed");
+        card.classList.add(
+            "completed"
+        );
+
+    }
+
+    const minutes =
+        timeToMinutes(
+            task.time
+        );
+
+    const hourHeight =
+        getHourHeight();
+
+    card.style.top =
+        `${minutes *
+        hourHeight /
+        60}px`;
+
+    const gap = 8;
+
+    card.style.width =
+        `calc((100% - ${
+            (laneCount - 1) * gap
+        }px) / ${laneCount})`;
+
+    card.style.left =
+        `calc(${lane} * ((100% - ${
+            (laneCount - 1) * gap
+        }px) / ${laneCount} + ${gap}px))`;
+
+    card.innerHTML = `
+
+        <div class="task-time">
+            🕐 ${escapeHTML(task.time)}
+        </div>
+
+        <div class="task-title">
+            ${escapeHTML(task.title)}
+        </div>
+
+        ${
+            task.description
+                ? `
+                    <div class="task-description">
+                        ${escapeHTML(
+                            task.description
+                        )}
+                    </div>
+                `
+                : ""
+        }
+
+        ${
+            getRepeatText(task)
+                ? `
+                    <div class="task-repeat">
+                        ↻ ${escapeHTML(
+                            getRepeatText(
+                                task
+                            )
+                        )}
+                    </div>
+                `
+                : ""
+        }
+
+        <div class="task-actions">
+
+            <button
+                class="task-check"
+                type="button"
+            >
+                ${
+                    isCompleted(
+                        task,
+                        selectedDate
+                    )
+                        ? "✓"
+                        : ""
+                }
+            </button>
+
+            <button
+                class="task-delete"
+                type="button"
+            >
+                ×
+            </button>
+
+        </div>
+    `;
+
+    card.addEventListener(
+        "click",
+        () =>
+            openTaskDetails(
+                task.id
+            )
+    );
+
+    card.querySelector(
+        ".task-check"
+    ).addEventListener(
+        "click",
+        async event => {
+
+            event.stopPropagation();
+
+            await toggleTaskCompletion(
+                task.id,
+                selectedDate
+            );
+
+        }
+    );
+
+    card.querySelector(
+        ".task-delete"
+    ).addEventListener(
+        "click",
+        async event => {
+
+            event.stopPropagation();
+
+            await deleteTask(
+                task.id
+            );
+
+        }
+    );
+
+    return card;
 }
 
+function createNoTimeTask(
+    task
+) {
 
-const minutes =
-    timeToMinutes(task.time);
+    const item =
+        document.createElement(
+            "div"
+        );
 
-const hourHeight =
-    getHourHeight();
+    item.className =
+        "no-time-task";
 
-card.style.top =
-    `${minutes * hourHeight / 60}px`;
+    if (
+        isCompleted(
+            task,
+            selectedDate
+        )
+    ) {
 
+        item.classList.add(
+            "completed"
+        );
 
-const gap = 8;
-
-card.style.width =
-    `calc((100% - ${(laneCount - 1) * gap}px) / ${laneCount})`;
-
-card.style.left =
-    `calc(${lane} * ((100% - ${(laneCount - 1) * gap}px) / ${laneCount} + ${gap}px))`;
-
-
-card.innerHTML = `
-
-    <div class="task-time">
-        🕐 ${escapeHTML(task.time)}
-    </div>
-
-    <div class="task-title">
-        ${escapeHTML(task.title)}
-    </div>
-
-    ${
-        task.description
-            ? `
-                <div class="task-description">
-                    ${escapeHTML(task.description)}
-                </div>
-            `
-            : ""
     }
 
-    ${
-        getRepeatText(task)
-            ? `
-                <div class="task-repeat">
-                    ↻ ${escapeHTML(
-                        getRepeatText(task)
-                    )}
-                </div>
-            `
-            : ""
-    }
-
-    <div class="task-actions">
+    item.innerHTML = `
 
         <button
             class="task-check"
@@ -860,6 +1413,28 @@ card.innerHTML = `
             }
         </button>
 
+        <div class="task-content">
+
+            <div class="task-title">
+                ${escapeHTML(
+                    task.title
+                )}
+            </div>
+
+            ${
+                task.description
+                    ? `
+                        <div class="task-description">
+                            ${escapeHTML(
+                                task.description
+                            )}
+                        </div>
+                    `
+                    : ""
+            }
+
+        </div>
+
         <button
             class="task-delete"
             type="button"
@@ -867,154 +1442,48 @@ card.innerHTML = `
             ×
         </button>
 
-    </div>
-`;
+    `;
 
-
-card.addEventListener(
-    "click",
-    () => openTaskDetails(task.id)
-);
-
-
-card.querySelector(
-    ".task-check"
-).addEventListener(
-    "click",
-    event => {
-
-        event.stopPropagation();
-
-        toggleTaskCompletion(
-            task.id,
-            selectedDate
-        );
-
-    }
-);
-
-
-card.querySelector(
-    ".task-delete"
-).addEventListener(
-    "click",
-    event => {
-
-        event.stopPropagation();
-
-        deleteTask(task.id);
-
-    }
-);
-
-
-return card;
-
-}
-
-function createNoTimeTask(task) {
-
-const item =
-    document.createElement("div");
-
-item.className =
-    "no-time-task";
-
-
-if (
-    isCompleted(
-        task,
-        selectedDate
-    )
-) {
-
-    item.classList.add("completed");
-}
-
-
-item.innerHTML = `
-
-    <button
-        class="task-check"
-        type="button"
-    >
-        ${
-            isCompleted(
-                task,
-                selectedDate
+    item.addEventListener(
+        "click",
+        () =>
+            openTaskDetails(
+                task.id
             )
-                ? "✓"
-                : ""
+    );
+
+    item.querySelector(
+        ".task-check"
+    ).addEventListener(
+        "click",
+        async event => {
+
+            event.stopPropagation();
+
+            await toggleTaskCompletion(
+                task.id,
+                selectedDate
+            );
+
         }
-    </button>
+    );
 
-    <div class="task-content">
+    item.querySelector(
+        ".task-delete"
+    ).addEventListener(
+        "click",
+        async event => {
 
-        <div class="task-title">
-            ${escapeHTML(task.title)}
-        </div>
+            event.stopPropagation();
 
-        ${
-            task.description
-                ? `
-                    <div class="task-description">
-                        ${escapeHTML(task.description)}
-                    </div>
-                `
-                : ""
+            await deleteTask(
+                task.id
+            );
+
         }
+    );
 
-    </div>
-
-    <button
-        class="task-delete"
-        type="button"
-    >
-        ×
-    </button>
-
-`;
-
-
-item.addEventListener(
-    "click",
-    () => openTaskDetails(task.id)
-);
-
-
-item.querySelector(
-    ".task-check"
-).addEventListener(
-    "click",
-    event => {
-
-        event.stopPropagation();
-
-        toggleTaskCompletion(
-            task.id,
-            selectedDate
-        );
-
-    }
-);
-
-
-item.querySelector(
-    ".task-delete"
-).addEventListener(
-    "click",
-    event => {
-
-        event.stopPropagation();
-
-        deleteTask(task.id);
-
-    }
-);
-
-
-return item;
-
+    return item;
 }
 
 /* =========================================================
@@ -1023,207 +1492,266 @@ RENDER DAY
 
 function renderTasks() {
 
-renderTimelineGrid();
+    renderTimelineGrid();
 
-timelineTasks.innerHTML = "";
-noTimeTasks.innerHTML = "";
+    timelineTasks.innerHTML = "";
+    noTimeTasks.innerHTML = "";
 
+    const dayTasks =
+        getTasksForSelectedDate();
 
-const dayTasks =
-    getTasksForSelectedDate();
-
-const timed =
-    dayTasks.filter(
-        task => Boolean(task.time)
-    );
-
-const withoutTime =
-    dayTasks.filter(
-        task => !task.time
-    );
-
-
-const lanes =
-    calculateTaskLanes(timed);
-
-
-lanes.items.forEach(item => {
-
-    timelineTasks.appendChild(
-        createTaskCard(
-            item.task,
-            item.lane,
-            lanes.laneCount
-        )
-    );
-
-});
-
-
-if (withoutTime.length) {
-
-    noTimeSection.classList.remove(
-        "hidden"
-    );
-
-    withoutTime.forEach(task => {
-
-        noTimeTasks.appendChild(
-            createNoTimeTask(task)
+    const timed =
+        dayTasks.filter(
+            task =>
+                Boolean(task.time)
         );
 
-    });
+    const withoutTime =
+        dayTasks.filter(
+            task =>
+                !task.time
+        );
 
-} else {
+    const lanes =
+        calculateTaskLanes(
+            timed
+        );
 
-    noTimeSection.classList.add(
-        "hidden"
+    lanes.items.forEach(
+        item => {
+
+            timelineTasks.appendChild(
+                createTaskCard(
+                    item.task,
+                    item.lane,
+                    lanes.laneCount
+                )
+            );
+
+        }
+    );
+
+    if (
+        withoutTime.length
+    ) {
+
+        noTimeSection.classList.remove(
+            "hidden"
+        );
+
+        withoutTime.forEach(
+            task => {
+
+                noTimeTasks.appendChild(
+                    createNoTimeTask(
+                        task
+                    )
+                );
+
+            }
+        );
+
+    } else {
+
+        noTimeSection.classList.add(
+            "hidden"
+        );
+
+    }
+
+    emptyState.classList.toggle(
+        "hidden",
+        dayTasks.length > 0
+    );
+
+    taskCount.textContent =
+        pluralizeTasks(
+            dayTasks.length
+        );
+
+    updateProgress(
+        dayTasks
     );
 }
 
+function updateProgress(
+    dayTasks
+) {
 
-emptyState.classList.toggle(
-    "hidden",
-    dayTasks.length > 0
-);
+    const total =
+        dayTasks.length;
 
+    const completed =
+        dayTasks.filter(
+            task =>
+                isCompleted(
+                    task,
+                    selectedDate
+                )
+        ).length;
 
-taskCount.textContent =
-    pluralizeTasks(
-        dayTasks.length
-    );
-
-
-updateProgress(dayTasks);
-
-}
-
-function updateProgress(dayTasks) {
-
-const total =
-    dayTasks.length;
-
-const completed =
-    dayTasks.filter(
-        task =>
-            isCompleted(
-                task,
-                selectedDate
+    const percent =
+        total
+            ? Math.round(
+                completed /
+                total *
+                100
             )
-    ).length;
+            : 0;
 
-const percent =
-    total
-        ? Math.round(
-            completed / total * 100
-        )
-        : 0;
+    progressText.textContent =
+        `${percent}%`;
 
-progressText.textContent =
-    `${percent}%`;
+    progressBar.style.width =
+        `${percent}%`;
 
-progressBar.style.width =
-    `${percent}%`;
-
-progressCount.textContent =
-    `${completed} из ${total} ${getTaskWord(total)} выполнено`;
-
+    progressCount.textContent =
+        `${completed} из ${total} ${
+            getTaskWord(total)
+        } выполнено`;
 }
 
 /* =========================================================
 COMPLETION
 ========================================================= */
 
-function toggleTaskCompletion(
-id,
-dateKey
+async function toggleTaskCompletion(
+    id,
+    dateKey
 ) {
 
-const task =
-    tasks.find(
-        item => item.id === id
-    );
+    const task =
+        tasks.find(
+            item =>
+                item.id === id
+        );
 
-if (!task) return;
+    if (!task) return;
 
-if (!Array.isArray(task.completedDates)) {
-    task.completedDates = [];
-}
+    try {
 
+        const data =
+            await apiRequest(
+                `/complete-task?id=${encodeURIComponent(
+                    id
+                )}`,
+                {
+                    method: "POST",
 
-const index =
-    task.completedDates.indexOf(
-        dateKey
-    );
+                    body:
+                        JSON.stringify({
+                            date: dateKey
+                        })
+                }
+            );
 
+        task.completedDates =
+            Array.isArray(
+                data.completedDates
+            )
+                ? data.completedDates
+                : [];
 
-if (index === -1) {
+        refreshDay();
 
-    task.completedDates.push(
-        dateKey
-    );
+        renderAllTasks();
 
-} else {
+        renderAnalytics();
 
-    task.completedDates.splice(
-        index,
-        1
-    );
-}
+        if (
+            openedTaskId === id &&
+            detailsOverlay.classList.contains(
+                "active"
+            )
+        ) {
 
+            openTaskDetails(id);
 
-saveTasks();
+        }
 
-refreshDay();
+    } catch (error) {
 
-renderAllTasks();
+        console.error(
+            "Ошибка выполнения задачи:",
+            error
+        );
 
-renderAnalytics();
+        alert(
+            error.message ||
+            "Не удалось изменить статус задачи."
+        );
 
+    }
 }
 
 /* =========================================================
 DELETE
 ========================================================= */
 
-function deleteTask(id) {
+async function deleteTask(id) {
 
-const task =
-    tasks.find(
-        item => item.id === id
-    );
+    const task =
+        tasks.find(
+            item =>
+                item.id === id
+        );
 
-if (!task) return;
+    if (!task) return;
 
+    if (
+        !confirm(
+            `Удалить задачу «${task.title}»?`
+        )
+    ) {
 
-if (
-    !confirm(
-        `Удалить задачу «${task.title}»?`
-    )
-) {
+        return;
 
-    return;
-}
+    }
 
+    try {
 
-tasks =
-    tasks.filter(
-        item => item.id !== id
-    );
+        await apiRequest(
+            `/tasks?id=${encodeURIComponent(
+                id
+            )}`,
+            {
+                method: "DELETE"
+            }
+        );
 
+        tasks =
+            tasks.filter(
+                item =>
+                    item.id !== id
+            );
 
-saveTasks();
+        if (
+            openedTaskId === id
+        ) {
 
+            closeTaskDetails();
 
-if (openedTaskId === id) {
-    closeTaskDetails();
-}
+        }
 
+        refreshDay();
 
-refreshDay();
-renderAllTasks();
-renderAnalytics();
+        renderAllTasks();
 
+        renderAnalytics();
+
+    } catch (error) {
+
+        console.error(
+            "Ошибка удаления задачи:",
+            error
+        );
+
+        alert(
+            error.message ||
+            "Не удалось удалить задачу."
+        );
+
+    }
 }
 
 /* =========================================================
@@ -1232,92 +1760,123 @@ DETAILS
 
 function openTaskDetails(id) {
 
-const task =
-    tasks.find(
-        item => item.id === id
-    );
+    const task =
+        tasks.find(
+            item =>
+                item.id === id
+        );
 
-if (!task) return;
+    if (!task) return;
 
+    openedTaskId = id;
 
-openedTaskId = id;
+    detailsTitle.textContent =
+        task.title;
 
+    detailsDate.textContent =
+        capitalize(
+            formatFullDate(
+                selectedDate
+            )
+        );
 
-detailsTitle.textContent =
-    task.title;
+    detailsDescription.textContent =
+        task.description ||
+        "Описание отсутствует";
 
-detailsDate.textContent =
-    capitalize(
-        formatFullDate(
+    detailsTime.textContent =
+        task.time ||
+        "Без времени";
+
+    detailsRepeat.textContent =
+        getRepeatText(task) ||
+        "Не повторяется";
+
+    const completed =
+        isCompleted(
+            task,
             selectedDate
-        )
+        );
+
+    detailsStatus.textContent =
+        completed
+            ? "✓ Выполнено"
+            : "Не выполнено";
+
+    detailsComplete.textContent =
+        completed
+            ? "Вернуть"
+            : "Выполнено";
+
+    detailsOverlay.classList.add(
+        "active"
     );
-
-detailsDescription.textContent =
-    task.description ||
-    "Описание отсутствует";
-
-detailsTime.textContent =
-    task.time ||
-    "Без времени";
-
-detailsRepeat.textContent =
-    getRepeatText(task) ||
-    "Не повторяется";
-
-
-const completed =
-    isCompleted(
-        task,
-        selectedDate
-    );
-
-
-detailsStatus.textContent =
-    completed
-        ? "✓ Выполнено"
-        : "Не выполнено";
-
-detailsComplete.textContent =
-    completed
-        ? "Вернуть"
-        : "Выполнено";
-
-
-detailsOverlay.classList.add(
-    "active"
-);
-
 }
 
 function closeTaskDetails() {
 
-detailsOverlay.classList.remove(
-    "active"
-);
+    detailsOverlay.classList.remove(
+        "active"
+    );
 
-openedTaskId = null;
-
+    openedTaskId = null;
 }
 
 closeDetails.addEventListener(
-"click",
-closeTaskDetails
+    "click",
+    closeTaskDetails
 );
 
 detailsOverlay.addEventListener(
-"click",
-event => {
+    "click",
+    event => {
 
-    if (
-        event.target ===
-        detailsOverlay
-    ) {
+        if (
+            event.target ===
+            detailsOverlay
+        ) {
 
-        closeTaskDetails();
+            closeTaskDetails();
+
+        }
+
     }
-}
+);
 
+/* =========================================================
+DETAILS ACTIONS
+========================================================= */
+
+detailsComplete.addEventListener(
+    "click",
+    async () => {
+
+        if (!openedTaskId) {
+            return;
+        }
+
+        await toggleTaskCompletion(
+            openedTaskId,
+            selectedDate
+        );
+
+    }
+);
+
+detailsDelete.addEventListener(
+    "click",
+    async () => {
+
+        if (!openedTaskId) {
+            return;
+        }
+
+        const id =
+            openedTaskId;
+
+        await deleteTask(id);
+
+    }
 );
 
 /* =========================================================
@@ -1325,97 +1884,104 @@ EDIT
 ========================================================= */
 
 detailsEdit.addEventListener(
-"click",
-() => {
+    "click",
+    () => {
 
-    if (!openedTaskId) return;
+        if (!openedTaskId) {
+            return;
+        }
 
-    const id =
-        openedTaskId;
+        const id =
+            openedTaskId;
 
-    closeTaskDetails();
+        closeTaskDetails();
 
-    openEditModal(id);
+        openEditModal(id);
 
-}
-
+    }
 );
 
 function openEditModal(id) {
 
-const task =
-    tasks.find(
-        item => item.id === id
-    );
-
-if (!task) return;
-
-
-editingTaskId = id;
-
-
-modalTitle.textContent =
-    "Редактировать задачу";
-
-saveTaskButton.textContent =
-    "Сохранить изменения";
-
-
-taskTitle.value =
-    task.title || "";
-
-taskDescription.value =
-    task.description || "";
-
-taskDate.value =
-    task.date || selectedDate;
-
-taskTime.value =
-    task.time || "";
-
-repeatSelect.value =
-    task.repeat || "none";
-
-
-selectedRepeatDays =
-    Array.isArray(task.repeatDays)
-        ? [...task.repeatDays]
-        : [];
-
-
-document
-    .querySelectorAll(
-        ".weekday-buttons button"
-    )
-    .forEach(button => {
-
-        const day =
-            Number(button.dataset.day);
-
-        button.classList.toggle(
-            "active",
-            selectedRepeatDays.includes(day)
+    const task =
+        tasks.find(
+            item =>
+                item.id === id
         );
 
-    });
+    if (!task) return;
 
+    editingTaskId = id;
 
-repeatDays.classList.toggle(
-    "hidden",
-    repeatSelect.value !== "weekly"
-);
+    modalTitle.textContent =
+        "Редактировать задачу";
 
+    saveTaskButton.textContent =
+        "Сохранить изменения";
 
-modalOverlay.classList.add(
-    "active"
-);
+    taskTitle.value =
+        task.title || "";
 
+    taskDescription.value =
+        task.description || "";
 
-setTimeout(
-    () => taskTitle.focus(),
-    100
-);
+    taskDate.value =
+        task.date ||
+        selectedDate;
 
+    taskTime.value =
+        task.time || "";
+
+    repeatSelect.value =
+        task.repeat ||
+        "none";
+
+    selectedRepeatDays =
+        Array.isArray(
+            task.repeatDays
+        )
+            ? [
+                ...task.repeatDays
+            ]
+            : [];
+
+    document
+        .querySelectorAll(
+            ".weekday-buttons button"
+        )
+        .forEach(
+            button => {
+
+                const day =
+                    Number(
+                        button.dataset.day
+                    );
+
+                button.classList.toggle(
+                    "active",
+                    selectedRepeatDays.includes(
+                        day
+                    )
+                );
+
+            }
+        );
+
+    repeatDays.classList.toggle(
+        "hidden",
+        repeatSelect.value !==
+        "weekly"
+    );
+
+    modalOverlay.classList.add(
+        "active"
+    );
+
+    setTimeout(
+        () =>
+            taskTitle.focus(),
+        100
+    );
 }
 
 /* =========================================================
@@ -1424,102 +1990,99 @@ CREATE MODAL
 
 function openCreateModal() {
 
-editingTaskId = null;
+    editingTaskId = null;
 
-modalTitle.textContent =
-    "Новая задача";
+    modalTitle.textContent =
+        "Новая задача";
 
-saveTaskButton.textContent =
-    "Создать задачу";
+    saveTaskButton.textContent =
+        "Создать задачу";
 
+    taskTitle.value = "";
+    taskDescription.value = "";
 
-taskTitle.value = "";
-taskDescription.value = "";
+    taskDate.value =
+        selectedDate;
 
-taskDate.value =
-    selectedDate;
+    taskTime.value = "";
 
-taskTime.value = "";
+    repeatSelect.value =
+        "none";
 
-repeatSelect.value =
-    "none";
+    selectedRepeatDays = [];
 
-selectedRepeatDays = [];
+    document
+        .querySelectorAll(
+            ".weekday-buttons button"
+        )
+        .forEach(
+            button => {
 
+                button.classList.remove(
+                    "active"
+                );
 
-document
-    .querySelectorAll(
-        ".weekday-buttons button"
-    )
-    .forEach(button => {
-
-        button.classList.remove(
-            "active"
+            }
         );
 
-    });
+    repeatDays.classList.add(
+        "hidden"
+    );
 
+    modalOverlay.classList.add(
+        "active"
+    );
 
-repeatDays.classList.add(
-    "hidden"
-);
-
-
-modalOverlay.classList.add(
-    "active"
-);
-
-
-setTimeout(
-    () => taskTitle.focus(),
-    100
-);
-
+    setTimeout(
+        () =>
+            taskTitle.focus(),
+        100
+    );
 }
 
 function closeModal() {
 
-modalOverlay.classList.remove(
-    "active"
-);
+    modalOverlay.classList.remove(
+        "active"
+    );
 
-editingTaskId = null;
-
+    editingTaskId = null;
 }
 
 $("openModal").addEventListener(
-"click",
-openCreateModal
+    "click",
+    openCreateModal
 );
 
 $("emptyAddButton").addEventListener(
-"click",
-openCreateModal
+    "click",
+    openCreateModal
 );
 
 $("closeModal").addEventListener(
-"click",
-closeModal
+    "click",
+    closeModal
 );
 
 $("cancelModal").addEventListener(
-"click",
-closeModal
+    "click",
+    closeModal
 );
 
 modalOverlay.addEventListener(
-"click",
-event => {
+    "click",
+    event => {
 
-    if (
-        event.target ===
-        modalOverlay
-    ) {
+        if (
+            event.target ===
+            modalOverlay
+        ) {
 
-        closeModal();
+            closeModal();
+
+        }
+
     }
-}
-
 );
 
 /* =========================================================
@@ -1527,605 +2090,753 @@ REPEAT
 ========================================================= */
 
 repeatSelect.addEventListener(
-"change",
-() => {
+    "change",
+    () => {
 
-    repeatDays.classList.toggle(
-        "hidden",
-        repeatSelect.value !== "weekly"
-    );
+        repeatDays.classList.toggle(
+            "hidden",
+            repeatSelect.value !==
+            "weekly"
+        );
 
-}
-
+    }
 );
 
 document
-.querySelectorAll(
-".weekday-buttons button"
-)
-.forEach(button => {
+    .querySelectorAll(
+        ".weekday-buttons button"
+    )
+    .forEach(
+        button => {
 
-    button.addEventListener(
-        "click",
-        () => {
+            button.addEventListener(
+                "click",
+                () => {
 
-            const day =
-                Number(button.dataset.day);
+                    const day =
+                        Number(
+                            button.dataset.day
+                        );
 
+                    if (
+                        selectedRepeatDays.includes(
+                            day
+                        )
+                    ) {
 
-            if (
-                selectedRepeatDays.includes(day)
-            ) {
+                        selectedRepeatDays =
+                            selectedRepeatDays.filter(
+                                item =>
+                                    item !==
+                                    day
+                            );
 
-                selectedRepeatDays =
-                    selectedRepeatDays.filter(
-                        item => item !== day
-                    );
+                        button.classList.remove(
+                            "active"
+                        );
 
-                button.classList.remove(
-                    "active"
-                );
+                    } else {
 
-            } else {
+                        selectedRepeatDays.push(
+                            day
+                        );
 
-                selectedRepeatDays.push(day);
+                        button.classList.add(
+                            "active"
+                        );
 
-                button.classList.add(
-                    "active"
-                );
-            }
+                    }
+
+                }
+            );
 
         }
     );
-
-});
 
 /* =========================================================
 SAVE CREATE / EDIT
 ========================================================= */
 
 taskForm.addEventListener(
-"submit",
-event => {
+    "submit",
+    async event => {
 
-    event.preventDefault();
+        event.preventDefault();
 
+        const title =
+            taskTitle.value.trim();
 
-    const title =
-        taskTitle.value.trim();
+        const description =
+            taskDescription.value.trim();
 
-    const description =
-        taskDescription.value.trim();
+        const date =
+            taskDate.value;
 
-    const date =
-        taskDate.value;
+        const time =
+            taskTime.value;
 
-    const time =
-        taskTime.value;
+        const repeat =
+            repeatSelect.value;
 
-    const repeat =
-        repeatSelect.value;
+        if (!title) {
 
-
-    if (!title) {
-        alert("Введите название задачи.");
-        return;
-    }
-
-
-    if (!date) {
-        alert("Выберите дату.");
-        return;
-    }
-
-
-    if (
-        repeat === "weekly" &&
-        selectedRepeatDays.length === 0
-    ) {
-
-        alert(
-            "Выберите хотя бы один день недели."
-        );
-
-        return;
-    }
-
-
-    let repeatDaysValue = [];
-
-
-    if (repeat === "daily") {
-
-        repeatDaysValue =
-            [0, 1, 2, 3, 4, 5, 6];
-
-    } else if (
-        repeat === "weekly"
-    ) {
-
-        repeatDaysValue =
-            [...selectedRepeatDays];
-    }
-
-
-    /* РЕДАКТИРОВАНИЕ */
-
-    if (editingTaskId) {
-
-        const task =
-            tasks.find(
-                item =>
-                    item.id === editingTaskId
+            alert(
+                "Введите название задачи."
             );
 
+            return;
 
-        if (task) {
-
-            task.title =
-                title;
-
-            task.description =
-                description;
-
-            task.date =
-                date;
-
-            task.time =
-                time;
-
-            task.repeat =
-                repeat;
-
-            task.repeatDays =
-                repeatDaysValue;
         }
 
+        if (!date) {
 
-    } else {
+            alert(
+                "Выберите дату."
+            );
 
-        /* СОЗДАНИЕ */
+            return;
 
-        tasks.push({
+        }
 
-            id:
-                Date.now().toString()
-                +
-                "-"
-                +
-                Math.random()
-                    .toString(36)
-                    .slice(2),
+        if (
+            repeat === "weekly" &&
+            selectedRepeatDays.length === 0
+        ) {
 
-            title,
+            alert(
+                "Выберите хотя бы один день недели."
+            );
 
-            description,
+            return;
 
-            date,
+        }
 
-            time,
+        let repeatDaysValue = [];
 
-            repeat,
+        if (
+            repeat ===
+            "daily"
+        ) {
 
-            repeatDays:
-                repeatDaysValue,
+            repeatDaysValue = [
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6
+            ];
 
-            completedDates: [],
+        } else if (
+            repeat ===
+            "weekly"
+        ) {
 
-            createdAt:
-                Date.now()
+            repeatDaysValue =
+                [
+                    ...selectedRepeatDays
+                ];
 
-        });
+        }
 
+        const oldButtonText =
+            saveTaskButton.textContent;
 
-        selectedDate = date;
+        saveTaskButton.disabled =
+            true;
+
+        saveTaskButton.textContent =
+            "Сохранение...";
+
+        try {
+
+            /* =========================================
+               РЕДАКТИРОВАНИЕ
+            ========================================= */
+
+            if (editingTaskId) {
+
+                const response =
+                    await apiRequest(
+                        `/tasks?id=${encodeURIComponent(
+                            editingTaskId
+                        )}`,
+                        {
+                            method: "PUT",
+
+                            body:
+                                JSON.stringify({
+
+                                    title,
+
+                                    description,
+
+                                    date,
+
+                                    time,
+
+                                    repeat,
+
+                                    repeatDays:
+                                        repeatDaysValue
+
+                                })
+                        }
+                    );
+
+                const updatedTask =
+                    response.task;
+
+                const index =
+                    tasks.findIndex(
+                        item =>
+                            item.id ===
+                            editingTaskId
+                    );
+
+                if (
+                    index !== -1 &&
+                    updatedTask
+                ) {
+
+                    tasks[index] =
+                        updatedTask;
+
+                }
+
+            } else {
+
+                /* =====================================
+                   СОЗДАНИЕ
+                ===================================== */
+
+                const response =
+                    await apiRequest(
+                        "/tasks",
+                        {
+                            method: "POST",
+
+                            body:
+                                JSON.stringify({
+
+                                    title,
+
+                                    description,
+
+                                    date,
+
+                                    time,
+
+                                    repeat,
+
+                                    repeatDays:
+                                        repeatDaysValue
+
+                                })
+                        }
+                    );
+
+                if (
+                    response.task
+                ) {
+
+                    tasks.push(
+                        response.task
+                    );
+
+                }
+
+                selectedDate =
+                    date;
+
+            }
+
+            closeModal();
+
+            refreshDay();
+
+            renderAllTasks();
+
+            renderAnalytics();
+
+        } catch (error) {
+
+            console.error(
+                "Ошибка сохранения задачи:",
+                error
+            );
+
+            alert(
+                error.message ||
+                "Не удалось сохранить задачу."
+            );
+
+        } finally {
+
+            saveTaskButton.disabled =
+                false;
+
+            saveTaskButton.textContent =
+                oldButtonText;
+
+        }
+
     }
-
-
-    saveTasks();
-
-    closeModal();
-
-    refreshDay();
-
-    renderAllTasks();
-
-    renderAnalytics();
-
-}
-
 );
 
 /* =========================================================
 ALL TASKS SCREEN
 ========================================================= */
 
-const taskSearch =
-$("taskSearch");
-
-const taskSort =
-$("taskSort");
-
 taskSearch.addEventListener(
-"input",
-renderAllTasks
+    "input",
+    renderAllTasks
 );
 
 taskSort.addEventListener(
-"change",
-() => {
-
-    currentSort =
-        taskSort.value;
-
-    renderAllTasks();
-
-}
-
-);
-
-document
-.querySelectorAll(".filter-button")
-.forEach(button => {
-
-    button.addEventListener(
-        "click",
-        () => {
-
-            document
-                .querySelectorAll(
-                    ".filter-button"
-                )
-                .forEach(item => {
-
-                    item.classList.remove(
-                        "active"
-                    );
-
-                });
-
-
-            button.classList.add(
-                "active"
-            );
-
-
-            currentFilter =
-                button.dataset.filter;
-
-
-            renderAllTasks();
-
-        }
-    );
-
-});
-
-function renderAllTasks() {
-
-const list =
-    $("allTasksList");
-
-const empty =
-    $("tasksEmpty");
-
-
-list.innerHTML = "";
-
-
-$("allTasksCount").textContent =
-    tasks.length;
-
-
-const search =
-    taskSearch.value
-        .trim()
-        .toLowerCase();
-
-
-let filtered =
-    tasks.filter(task => {
-
-        const matchesSearch =
-            !search ||
-            task.title
-                .toLowerCase()
-                .includes(search) ||
-            task.description
-                .toLowerCase()
-                .includes(search);
-
-
-        if (!matchesSearch) {
-            return false;
-        }
-
-
-        if (currentFilter === "active") {
-
-            return !isTaskCompletedAnywhere(task);
-        }
-
-
-        if (currentFilter === "completed") {
-
-            return isTaskCompletedAnywhere(task);
-        }
-
-
-        if (currentFilter === "notime") {
-
-            return !task.time;
-        }
-
-
-        return true;
-
-    });
-
-
-filtered =
-    sortAllTasks(filtered);
-
-
-$("tasksResultText").textContent =
-    `${filtered.length} ${pluralizeTaskWord(filtered.length)}`;
-
-
-if (!filtered.length) {
-
-    empty.classList.remove(
-        "hidden"
-    );
-
-    return;
-
-}
-
-
-empty.classList.add(
-    "hidden"
-);
-
-
-filtered.forEach(task => {
-
-    list.appendChild(
-        createAllTaskCard(task)
-    );
-
-});
-
-}
-
-function sortAllTasks(list) {
-
-return [...list].sort(
-    (a, b) => {
-
-        if (currentSort === "title") {
-
-            return a.title.localeCompare(
-                b.title,
-                "ru"
-            );
-        }
-
-
-        if (currentSort === "created") {
-
-            return (
-                (b.createdAt || 0) -
-                (a.createdAt || 0)
-            );
-        }
-
-
-        if (currentSort === "time") {
-
-            return (
-                (a.time || "99:99")
-                    .localeCompare(
-                        b.time || "99:99"
-                    )
-            );
-        }
-
-
-        return (
-            a.date.localeCompare(b.date) ||
-            (a.time || "99:99")
-                .localeCompare(
-                    b.time || "99:99"
-                )
-        );
-
-    }
-);
-
-}
-
-function isTaskCompletedAnywhere(task) {
-
-return (
-    Array.isArray(task.completedDates) &&
-    task.completedDates.length > 0
-);
-
-}
-
-function createAllTaskCard(task) {
-
-const card =
-    document.createElement("article");
-
-card.className =
-    "all-task-card";
-
-
-const completed =
-    isTaskCompletedAnywhere(task);
-
-
-if (completed) {
-    card.classList.add("completed");
-}
-
-
-card.innerHTML = `
-
-    <button
-        class="list-check"
-        type="button"
-    >
-        ${completed ? "✓" : ""}
-    </button>
-
-
-    <div class="all-task-content">
-
-        <div class="all-task-title">
-            ${escapeHTML(task.title)}
-        </div>
-
-
-        <div class="all-task-meta">
-
-            <span>
-                📅 ${formatShortDate(task.date)}
-            </span>
-
-            <span>
-                ${task.time
-                    ? `🕐 ${escapeHTML(task.time)}`
-                    : "Без времени"
-                }
-            </span>
-
-        </div>
-
-
-        ${
-            task.description
-                ? `
-                    <div class="all-task-description">
-                        ${escapeHTML(
-                            task.description
-                        )}
-                    </div>
-                `
-                : ""
-        }
-
-
-        ${
-            getRepeatText(task)
-                ? `
-                    <div class="task-repeat">
-                        ↻ ${escapeHTML(
-                            getRepeatText(task)
-                        )}
-                    </div>
-                `
-                : ""
-        }
-
-    </div>
-
-
-    <div class="list-task-actions">
-
-        <button
-            class="list-edit"
-            type="button"
-            title="Редактировать"
-        >
-            ✎
-        </button>
-
-        <button
-            class="list-delete"
-            type="button"
-            title="Удалить"
-        >
-            ×
-        </button>
-
-    </div>
-
-`;
-
-
-card.querySelector(
-    ".list-check"
-).addEventListener(
-    "click",
-    event => {
-
-        event.stopPropagation();
-
-        toggleTaskCompletion(
-            task.id,
-            selectedDate
-        );
+    "change",
+    () => {
+
+        currentSort =
+            taskSort.value;
 
         renderAllTasks();
 
     }
 );
 
+document
+    .querySelectorAll(
+        ".filter-button"
+    )
+    .forEach(
+        button => {
 
-card.querySelector(
-    ".list-edit"
-).addEventListener(
-    "click",
-    event => {
+            button.addEventListener(
+                "click",
+                () => {
 
-        event.stopPropagation();
+                    document
+                        .querySelectorAll(
+                            ".filter-button"
+                        )
+                        .forEach(
+                            item => {
 
-        openEditModal(task.id);
+                                item.classList.remove(
+                                    "active"
+                                );
 
-    }
-);
+                            }
+                        );
 
+                    button.classList.add(
+                        "active"
+                    );
 
-card.querySelector(
-    ".list-delete"
-).addEventListener(
-    "click",
-    event => {
+                    currentFilter =
+                        button.dataset.filter;
 
-        event.stopPropagation();
+                    renderAllTasks();
 
-        deleteTask(task.id);
+                }
+            );
 
-    }
-);
+        }
+    );
 
+function renderAllTasks() {
 
-card.addEventListener(
-    "click",
-    () => {
+    const list =
+        $("allTasksList");
 
-        selectedDate =
-            task.date;
+    const empty =
+        $("tasksEmpty");
 
-        switchScreen(
-            "dayScreen"
+    list.innerHTML = "";
+
+    $("allTasksCount").textContent =
+        tasks.length;
+
+    const search =
+        taskSearch.value
+            .trim()
+            .toLowerCase();
+
+    let filtered =
+        tasks.filter(
+            task => {
+
+                const title =
+                    String(
+                        task.title ||
+                        ""
+                    ).toLowerCase();
+
+                const description =
+                    String(
+                        task.description ||
+                        ""
+                    ).toLowerCase();
+
+                const matchesSearch =
+                    !search ||
+                    title.includes(
+                        search
+                    ) ||
+                    description.includes(
+                        search
+                    );
+
+                if (!matchesSearch) {
+                    return false;
+                }
+
+                if (
+                    currentFilter ===
+                    "active"
+                ) {
+
+                    return !isTaskCompletedAnywhere(
+                        task
+                    );
+
+                }
+
+                if (
+                    currentFilter ===
+                    "completed"
+                ) {
+
+                    return isTaskCompletedAnywhere(
+                        task
+                    );
+
+                }
+
+                if (
+                    currentFilter ===
+                    "notime"
+                ) {
+
+                    return !task.time;
+
+                }
+
+                return true;
+
+            }
         );
 
-        refreshDay();
+    filtered =
+        sortAllTasks(
+            filtered
+        );
 
-        openTaskDetails(
-            task.id
+    $("tasksResultText").textContent =
+        `${filtered.length} ${
+            pluralizeTaskWord(
+                filtered.length
+            )
+        }`;
+
+    if (
+        !filtered.length
+    ) {
+
+        empty.classList.remove(
+            "hidden"
+        );
+
+        return;
+
+    }
+
+    empty.classList.add(
+        "hidden"
+    );
+
+    filtered.forEach(
+        task => {
+
+            list.appendChild(
+                createAllTaskCard(
+                    task
+                )
+            );
+
+        }
+    );
+}
+
+function sortAllTasks(
+    list
+) {
+
+    return [...list].sort(
+        (a, b) => {
+
+            if (
+                currentSort ===
+                "title"
+            ) {
+
+                return String(
+                    a.title || ""
+                ).localeCompare(
+                    String(
+                        b.title || ""
+                    ),
+                    "ru"
+                );
+
+            }
+
+            if (
+                currentSort ===
+                "created"
+            ) {
+
+                return (
+                    new Date(
+                        b.createdAt || 0
+                    ).getTime() -
+                    new Date(
+                        a.createdAt || 0
+                    ).getTime()
+                );
+
+            }
+
+            if (
+                currentSort ===
+                "time"
+            ) {
+
+                return (
+                    (a.time ||
+                        "99:99")
+                        .localeCompare(
+                            b.time ||
+                            "99:99"
+                        )
+                );
+
+            }
+
+            return (
+                String(
+                    a.date || ""
+                ).localeCompare(
+                    String(
+                        b.date || ""
+                    )
+                ) ||
+                (
+                    a.time ||
+                    "99:99"
+                ).localeCompare(
+                    b.time ||
+                    "99:99"
+                )
+            );
+
+        }
+    );
+}
+
+function isTaskCompletedAnywhere(
+    task
+) {
+
+    return (
+        Array.isArray(
+            task.completedDates
+        ) &&
+        task.completedDates.length > 0
+    );
+}
+
+function createAllTaskCard(
+    task
+) {
+
+    const card =
+        document.createElement(
+            "article"
+        );
+
+    card.className =
+        "all-task-card";
+
+    const completed =
+        isTaskCompletedAnywhere(
+            task
+        );
+
+    if (completed) {
+
+        card.classList.add(
+            "completed"
         );
 
     }
-);
 
+    card.innerHTML = `
 
-return card;
+        <button
+            class="list-check"
+            type="button"
+        >
+            ${completed ? "✓" : ""}
+        </button>
 
+        <div class="all-task-content">
+
+            <div class="all-task-title">
+                ${escapeHTML(
+                    task.title
+                )}
+            </div>
+
+            <div class="all-task-meta">
+
+                <span>
+                    📅 ${formatShortDate(
+                        task.date
+                    )}
+                </span>
+
+                <span>
+                    ${
+                        task.time
+                            ? `🕐 ${escapeHTML(
+                                task.time
+                            )}`
+                            : "Без времени"
+                    }
+                </span>
+
+            </div>
+
+            ${
+                task.description
+                    ? `
+                        <div class="all-task-description">
+                            ${escapeHTML(
+                                task.description
+                            )}
+                        </div>
+                    `
+                    : ""
+            }
+
+            ${
+                getRepeatText(task)
+                    ? `
+                        <div class="task-repeat">
+                            ↻ ${escapeHTML(
+                                getRepeatText(
+                                    task
+                                )
+                            )}
+                        </div>
+                    `
+                    : ""
+            }
+
+        </div>
+
+        <div class="list-task-actions">
+
+            <button
+                class="list-edit"
+                type="button"
+                title="Редактировать"
+            >
+                ✎
+            </button>
+
+            <button
+                class="list-delete"
+                type="button"
+                title="Удалить"
+            >
+                ×
+            </button>
+
+        </div>
+
+    `;
+
+    card.querySelector(
+        ".list-check"
+    ).addEventListener(
+        "click",
+        async event => {
+
+            event.stopPropagation();
+
+            await toggleTaskCompletion(
+                task.id,
+                selectedDate
+            );
+
+        }
+    );
+
+    card.querySelector(
+        ".list-edit"
+    ).addEventListener(
+        "click",
+        event => {
+
+            event.stopPropagation();
+
+            openEditModal(
+                task.id
+            );
+
+        }
+    );
+
+    card.querySelector(
+        ".list-delete"
+    ).addEventListener(
+        "click",
+        async event => {
+
+            event.stopPropagation();
+
+            await deleteTask(
+                task.id
+            );
+
+        }
+    );
+
+    card.addEventListener(
+        "click",
+        () => {
+
+            selectedDate =
+                task.date;
+
+            switchScreen(
+                "dayScreen"
+            );
+
+            refreshDay();
+
+            openTaskDetails(
+                task.id
+            );
+
+        }
+    );
+
+    return card;
 }
 
 /* =========================================================
@@ -2134,211 +2845,96 @@ ANALYTICS
 
 function renderAnalytics() {
 
-const total =
-    tasks.length;
+    const total =
+        tasks.length;
 
+    const completed =
+        tasks.filter(
+            task =>
+                isTaskCompletedAnywhere(
+                    task
+                )
+        ).length;
 
-const completed =
-    tasks.filter(
-        task =>
-            isTaskCompletedAnywhere(task)
-    ).length;
+    const active =
+        total -
+        completed;
 
+    const todayTasks =
+        getTasksForDate(
+            getTodayKey()
+        );
 
-const active =
-    total - completed;
+    const percent =
+        total
+            ? Math.round(
+                completed /
+                total *
+                100
+            )
+            : 0;
 
+    $("analyticsPercent").textContent =
+        `${percent}%`;
 
-const todayTasks =
-    getTasksForDate(
-        getTodayKey()
-    );
+    $("analyticsMainText").textContent =
+        `${completed} из ${total} задач`;
 
+    $("statTotal").textContent =
+        total;
 
-const percent =
-    total
-        ? Math.round(
-            completed / total * 100
-        )
-        : 0;
+    $("statCompleted").textContent =
+        completed;
 
+    $("statActive").textContent =
+        active;
 
-$("analyticsPercent").textContent =
-    `${percent}%`;
+    $("statToday").textContent =
+        todayTasks.length;
 
+    renderWeekChart();
 
-$("analyticsMainText").textContent =
-    `${completed} из ${total} задач`;
-
-
-$("statTotal").textContent =
-    total;
-
-
-$("statCompleted").textContent =
-    completed;
-
-
-$("statActive").textContent =
-    active;
-
-
-$("statToday").textContent =
-    todayTasks.length;
-
-
-renderWeekChart();
-
-renderProductivity();
-
+    renderProductivity();
 }
 
 function renderWeekChart() {
 
-const chart =
-    $("weekChart");
+    const chart =
+        $("weekChart");
 
-chart.innerHTML = "";
+    chart.innerHTML = "";
 
-
-const today =
-    dateFromKey(
-        getTodayKey()
-    );
-
-
-let totalCompleted = 0;
-
-const values = [];
-
-
-for (let i = 6; i >= 0; i--) {
-
-    const date =
-        addDays(today, -i);
-
-    const key =
-        getDateKey(date);
-
-
-    const dayTasks =
-        getTasksForDate(key);
-
-
-    const completed =
-        dayTasks.filter(
-            task =>
-                isCompleted(
-                    task,
-                    key
-                )
-        ).length;
-
-
-    totalCompleted += completed;
-
-
-    values.push({
-        key,
-        completed,
-        date
-    });
-
-}
-
-
-const max =
-    Math.max(
-        ...values.map(
-            item => item.completed
-        ),
-        1
-    );
-
-
-values.forEach(item => {
-
-    const column =
-        document.createElement("div");
-
-    column.className =
-        "chart-column";
-
-
-    const value =
-        document.createElement("div");
-
-    value.className =
-        "chart-value";
-
-    value.textContent =
-        item.completed;
-
-
-    const bar =
-        document.createElement("div");
-
-    bar.className =
-        "chart-bar";
-
-
-    bar.style.height =
-        `${Math.max(
-            item.completed / max * 100,
-            item.completed ? 8 : 3
-        )}%`;
-
-
-    const label =
-        document.createElement("div");
-
-    label.className =
-        "chart-label";
-
-    label.textContent =
-        capitalize(
-            getDayName(item.date)
+    const today =
+        dateFromKey(
+            getTodayKey()
         );
 
+    let totalCompleted = 0;
 
-    column.appendChild(value);
-    column.appendChild(bar);
-    column.appendChild(label);
+    const values = [];
 
-    chart.appendChild(column);
+    for (
+        let i = 6;
+        i >= 0;
+        i--
+    ) {
 
-});
+        const date =
+            addDays(
+                today,
+                -i
+            );
 
+        const key =
+            getDateKey(date);
 
-$("weekTotal").textContent =
-    totalCompleted;
+        const dayTasks =
+            getTasksForDate(
+                key
+            );
 
-}
-
-function renderProductivity() {
-
-const today =
-    dateFromKey(
-        getTodayKey()
-    );
-
-
-let sum = 0;
-let best = null;
-
-
-for (let i = 0; i < 7; i++) {
-
-    const date =
-        addDays(today, -i);
-
-    const key =
-        getDateKey(date);
-
-
-    const count =
-        getTasksForDate(key)
-            .filter(
+        const completed =
+            dayTasks.filter(
                 task =>
                     isCompleted(
                         task,
@@ -2346,134 +2942,316 @@ for (let i = 0; i < 7; i++) {
                     )
             ).length;
 
+        totalCompleted +=
+            completed;
 
-    sum += count;
-
-
-    if (
-        !best ||
-        count > best.count
-    ) {
-
-        best = {
-            count,
-            key
-        };
+        values.push({
+            key,
+            completed,
+            date
+        });
 
     }
 
+    const max =
+        Math.max(
+            ...values.map(
+                item =>
+                    item.completed
+            ),
+            1
+        );
+
+    values.forEach(
+        item => {
+
+            const column =
+                document.createElement(
+                    "div"
+                );
+
+            column.className =
+                "chart-column";
+
+            const value =
+                document.createElement(
+                    "div"
+                );
+
+            value.className =
+                "chart-value";
+
+            value.textContent =
+                item.completed;
+
+            const bar =
+                document.createElement(
+                    "div"
+                );
+
+            bar.className =
+                "chart-bar";
+
+            bar.style.height =
+                `${Math.max(
+                    item.completed /
+                    max *
+                    100,
+                    item.completed
+                        ? 8
+                        : 3
+                )}%`;
+
+            const label =
+                document.createElement(
+                    "div"
+                );
+
+            label.className =
+                "chart-label";
+
+            label.textContent =
+                capitalize(
+                    getDayName(
+                        item.date
+                    )
+                );
+
+            column.appendChild(
+                value
+            );
+
+            column.appendChild(
+                bar
+            );
+
+            column.appendChild(
+                label
+            );
+
+            chart.appendChild(
+                column
+            );
+
+        }
+    );
+
+    $("weekTotal").textContent =
+        totalCompleted;
 }
 
+function renderProductivity() {
 
-$("averageTasks").textContent =
-    (sum / 7).toFixed(1);
+    const today =
+        dateFromKey(
+            getTodayKey()
+        );
 
+    let sum = 0;
+    let best = null;
 
-if (best && best.count > 0) {
+    for (
+        let i = 0;
+        i < 7;
+        i++
+    ) {
 
-    $("bestDay").textContent =
-        `${capitalize(
-            formatFullDate(best.key)
-        )} — ${best.count}`;
+        const date =
+            addDays(
+                today,
+                -i
+            );
 
-} else {
+        const key =
+            getDateKey(date);
 
-    $("bestDay").textContent =
-        "Пока нет данных";
-}
+        const count =
+            getTasksForDate(
+                key
+            )
+            .filter(
+                task =>
+                    isCompleted(
+                        task,
+                        key
+                    )
+            )
+            .length;
 
+        sum += count;
+
+        if (
+            !best ||
+            count > best.count
+        ) {
+
+            best = {
+                count,
+                key
+            };
+
+        }
+
+    }
+
+    $("averageTasks").textContent =
+        (sum / 7).toFixed(1);
+
+    if (
+        best &&
+        best.count > 0
+    ) {
+
+        $("bestDay").textContent =
+            `${capitalize(
+                formatFullDate(
+                    best.key
+                )
+            )} — ${best.count}`;
+
+    } else {
+
+        $("bestDay").textContent =
+            "Пока нет данных";
+
+    }
 }
 
 /* =========================================================
 TEXT
 ========================================================= */
 
-function getRepeatText(task) {
-
-if (
-    !task.repeat ||
-    task.repeat === "none"
+function getRepeatText(
+    task
 ) {
+
+    if (
+        !task.repeat ||
+        task.repeat === "none"
+    ) {
+
+        return "";
+
+    }
+
+    if (
+        task.repeat ===
+        "daily"
+    ) {
+
+        return "каждый день";
+
+    }
+
+    if (
+        task.repeat ===
+        "weekly"
+    ) {
+
+        const names = {
+
+            0: "Вс",
+            1: "Пн",
+            2: "Вт",
+            3: "Ср",
+            4: "Чт",
+            5: "Пт",
+            6: "Сб"
+
+        };
+
+        return Array.isArray(
+            task.repeatDays
+        )
+
+            ? task.repeatDays
+                .map(
+                    day =>
+                        names[day]
+                )
+                .join(", ")
+
+            : "";
+
+    }
 
     return "";
 }
 
-
-if (task.repeat === "daily") {
-    return "каждый день";
-}
-
-
-if (task.repeat === "weekly") {
-
-    const names = {
-        0: "Вс",
-        1: "Пн",
-        2: "Вт",
-        3: "Ср",
-        4: "Чт",
-        5: "Пт",
-        6: "Сб"
-    };
-
-
-    return Array.isArray(task.repeatDays)
-        ? task.repeatDays
-            .map(day => names[day])
-            .join(", ")
-        : "";
-}
-
-
-return "";
-
-}
-
-function getTaskWord(number) {
-
-if (
-    number % 10 === 1 &&
-    number % 100 !== 11
+function getTaskWord(
+    number
 ) {
-    return "задача";
+
+    if (
+        number % 10 === 1 &&
+        number % 100 !== 11
+    ) {
+
+        return "задача";
+
+    }
+
+    if (
+        number % 10 >= 2 &&
+        number % 10 <= 4 &&
+        (
+            number % 100 < 10 ||
+            number % 100 >= 20
+        )
+    ) {
+
+        return "задачи";
+
+    }
+
+    return "задач";
 }
 
-if (
-    number % 10 >= 2 &&
-    number % 10 <= 4 &&
-    (
-        number % 100 < 10 ||
-        number % 100 >= 20
-    )
+function pluralizeTasks(
+    number
 ) {
-    return "задачи";
-}
 
-return "задач";
-
-}
-
-function pluralizeTasks(number) {
-
-return `${number} ${getTaskWord(number)}`;
+    return `${number} ${
+        getTaskWord(number)
+    }`;
 
 }
 
-function pluralizeTaskWord(number) {
+function pluralizeTaskWord(
+    number
+) {
 
-return getTaskWord(number);
+    return getTaskWord(
+        number
+    );
 
 }
 
-function escapeHTML(value) {
+function escapeHTML(
+    value
+) {
 
-return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
-
+    return String(value)
+        .replaceAll(
+            "&",
+            "&amp;"
+        )
+        .replaceAll(
+            "<",
+            "&lt;"
+        )
+        .replaceAll(
+            ">",
+            "&gt;"
+        )
+        .replaceAll(
+            '"',
+            "&quot;"
+        )
+        .replaceAll(
+            "'",
+            "&#039;"
+        );
 }
 
 /* =========================================================
@@ -2481,18 +3259,23 @@ ESC
 ========================================================= */
 
 document.addEventListener(
-"keydown",
-event => {
+    "keydown",
+    event => {
 
-    if (event.key !== "Escape") {
-        return;
+        if (
+            event.key !==
+            "Escape"
+        ) {
+
+            return;
+
+        }
+
+        closeModal();
+
+        closeTaskDetails();
+
     }
-
-    closeModal();
-    closeTaskDetails();
-
-}
-
 );
 
 /* =========================================================
@@ -2502,42 +3285,136 @@ RESIZE
 let resizeTimer = null;
 
 window.addEventListener(
-"resize",
-() => {
+    "resize",
+    () => {
 
-    clearTimeout(resizeTimer);
-
-    resizeTimer =
-        setTimeout(
-            () => {
-
-                renderTasks();
-
-            },
-            150
+        clearTimeout(
+            resizeTimer
         );
 
-}
+        resizeTimer =
+            setTimeout(
+                () => {
 
+                    renderTasks();
+
+                },
+                150
+            );
+
+    }
 );
 
 /* =========================================================
 INIT
 ========================================================= */
 
-function init() {
+async function init() {
 
-loadTheme();
+    loadTheme();
 
-updateDateUI();
+    updateDateUI();
 
-renderCalendar();
+    try {
 
-renderTasks();
+        await authenticateTelegram();
+        renderTelegramUser();
+        await loadTasksFromServer();
 
-renderAllTasks();
+        renderCalendar();
 
-renderAnalytics();
+        renderTasks();
+
+        renderAllTasks();
+
+        renderAnalytics();
+
+    } catch (error) {
+
+        console.error(
+            "Ошибка запуска приложения:",
+            error
+        );
+
+        renderCalendar();
+
+        renderTasks();
+
+        const message =
+            document.createElement(
+                "div"
+            );
+
+        message.style.cssText = `
+            position: fixed;
+            inset: 0;
+            z-index: 9999;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+            background: var(--bg, #ffffff);
+            color: var(--text, #111111);
+            text-align: center;
+            font-size: 16px;
+        `;
+
+        message.innerHTML = `
+            <div>
+                <div style="
+                    font-size: 42px;
+                    margin-bottom: 16px;
+                ">
+                    🔐
+                </div>
+
+                <strong style="
+                    display: block;
+                    margin-bottom: 10px;
+                    font-size: 20px;
+                ">
+                    Не удалось войти
+                </strong>
+
+                <div style="
+                    opacity: .7;
+                    line-height: 1.5;
+                ">
+                    ${escapeHTML(
+                        error.message ||
+                        "Неизвестная ошибка"
+                    )}
+                </div>
+
+                <button
+                    type="button"
+                    id="reloadAppButton"
+                    style="
+                        margin-top: 20px;
+                        padding: 12px 20px;
+                        border: 0;
+                        border-radius: 12px;
+                        cursor: pointer;
+                    "
+                >
+                    Повторить
+                </button>
+            </div>
+        `;
+
+        document.body.appendChild(
+            message
+        );
+
+        $("reloadAppButton")
+            .addEventListener(
+                "click",
+                () => {
+                    location.reload();
+                }
+            );
+
+    }
 
 }
 
