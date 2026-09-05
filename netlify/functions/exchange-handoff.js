@@ -9,47 +9,75 @@ const supabase = createClient(
     process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-function json(statusCode, data, extraHeaders = {}) {
+/* =========================================================
+   JSON RESPONSE
+========================================================= */
+
+function json(statusCode, data) {
     return {
         statusCode,
 
         headers: {
-            "Content-Type": "application/json",
+            "Content-Type":
+                "application/json",
 
-            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Origin":
+                "*",
 
             "Access-Control-Allow-Headers":
                 "Content-Type",
 
             "Access-Control-Allow-Methods":
-                "POST, OPTIONS",
-
-            ...extraHeaders
+                "POST, OPTIONS"
         },
 
-        body: JSON.stringify(data)
+        body:
+            JSON.stringify(data)
     };
 }
 
+/* =========================================================
+   HANDLER
+========================================================= */
+
 exports.handler = async (event) => {
+
+    /* =====================================================
+       OPTIONS
+    ===================================================== */
 
     if (
         event.httpMethod ===
         "OPTIONS"
     ) {
-        return json(204, {});
+        return json(
+            204,
+            {}
+        );
     }
+
+    /* =====================================================
+       ONLY POST
+    ===================================================== */
 
     if (
         event.httpMethod !==
         "POST"
     ) {
-        return json(405, {
-            error: "Method not allowed"
-        });
+        return json(
+            405,
+            {
+                error:
+                    "Method not allowed"
+            }
+        );
     }
 
     try {
+
+        /* =================================================
+           BODY
+        ================================================= */
 
         let body;
 
@@ -57,43 +85,65 @@ exports.handler = async (event) => {
 
             body =
                 JSON.parse(
-                    event.body || "{}"
+                    event.body ||
+                    "{}"
                 );
 
         } catch {
 
-            return json(400, {
-                error: "Invalid JSON"
-            });
+            return json(
+                400,
+                {
+                    error:
+                        "Invalid JSON"
+                }
+            );
 
         }
 
         const code =
             String(
-                body.code || ""
+                body.code ||
+                ""
             ).trim();
 
         if (!code) {
 
-            return json(400, {
-                error:
-                    "Handoff code is required"
-            });
+            return json(
+                400,
+                {
+                    error:
+                        "Handoff code is required"
+                }
+            );
 
         }
 
-        /*
-         * Находим одноразовый код
-         */
+        /* =================================================
+           FIND HANDOFF
+        ================================================= */
 
         const {
             data: handoff,
             error
         } = await supabase
-            .from("telegram_handoffs")
+
+            .from(
+                "telegram_handoffs"
+            )
+
             .select("*")
-            .eq("code", code)
-            .is("used_at", null)
+
+            .eq(
+                "code",
+                code
+            )
+
+            .is(
+                "used_at",
+                null
+            )
+
             .single();
 
         if (
@@ -101,17 +151,19 @@ exports.handler = async (event) => {
             !handoff
         ) {
 
-            return json(401, {
-                error:
-                    "Invalid or already used handoff"
-            });
+            return json(
+                401,
+                {
+                    error:
+                        "Invalid or already used handoff"
+                }
+            );
 
         }
 
-        /*
-         * Проверяем срок действия.
-         * Код действует 5 минут.
-         */
+        /* =================================================
+           CHECK EXPIRATION
+        ================================================= */
 
         const createdAt =
             new Date(
@@ -122,47 +174,108 @@ exports.handler = async (event) => {
             Date.now() -
             createdAt;
 
+        /*
+         * Код действует 5 минут.
+         */
+
         if (
             age >
             5 * 60 * 1000
         ) {
 
-            return json(401, {
-                error:
-                    "Handoff code expired"
-            });
+            return json(
+                401,
+                {
+                    error:
+                        "Handoff code expired"
+                }
+            );
 
         }
 
         if (age < 0) {
 
-            return json(401, {
-                error:
-                    "Invalid handoff time"
-            });
+            return json(
+                401,
+                {
+                    error:
+                        "Invalid handoff time"
+                }
+            );
 
         }
 
-        /*
-         * Помечаем код использованным
-         */
+        /* =================================================
+           GET USER FIRST
+        ================================================= */
 
         const {
+            data: user,
+            error: userError
+        } = await supabase
+
+            .from(
+                "telegram_users"
+            )
+
+            .select("*")
+
+            .eq(
+                "id",
+                handoff.telegram_user_id
+            )
+
+            .single();
+
+        if (
+            userError ||
+            !user
+        ) {
+
+            return json(
+                401,
+                {
+                    error:
+                        "Telegram user not found"
+                }
+            );
+
+        }
+
+        /* =================================================
+           MARK HANDOFF USED
+        ================================================= */
+
+        const {
+            data: updatedHandoff,
             error: updateError
         } = await supabase
-            .from("telegram_handoffs")
-            .update({
-                used_at:
-                    new Date().toISOString()
-            })
+
+            .from(
+                "telegram_handoffs"
+            )
+
+            .update(
+                {
+                    used_at:
+                        new Date()
+                            .toISOString()
+                }
+            )
+
             .eq(
                 "id",
                 handoff.id
             )
+
             .is(
                 "used_at",
                 null
-            );
+            )
+
+            .select("id")
+            
+            .maybeSingle();
 
         if (updateError) {
 
@@ -171,69 +284,45 @@ exports.handler = async (event) => {
                 updateError
             );
 
-            return json(500, {
-                error:
-                    "Failed to use handoff"
-            });
+            return json(
+                500,
+                {
+                    error:
+                        "Failed to use handoff"
+                }
+            );
 
         }
 
         /*
-         * Создаём новую сессию
+         * Если запись уже успел использовать
+         * другой запрос.
          */
+
+        if (!updatedHandoff) {
+
+            return json(
+                401,
+                {
+                    error:
+                        "Handoff already used"
+                }
+            );
+
+        }
+
+        /* =================================================
+           CREATE NEW SESSION
+        ================================================= */
 
         const sessionToken =
             createSessionToken(
                 handoff.telegram_user_id
             );
 
-        /*
-         * Получаем пользователя
-         */
-
-        const {
-            data: user,
-            error: userError
-        } = await supabase
-            .from("telegram_users")
-            .select("*")
-            .eq(
-                "id",
-                handoff.telegram_user_id
-            )
-            .single();
-
-        if (
-            userError ||
-            !user
-        ) {
-
-            return json(401, {
-                error:
-                    "Telegram user not found"
-            });
-
-        }
-
-        /*
-         * Cookie:
-         *
-         * Secure
-         * HttpOnly
-         * SameSite=Lax
-         * Path=/
-         * Max-Age=24 часа
-         */
-
-        const sessionCookie =
-            [
-                `dayPlannerSession=${encodeURIComponent(sessionToken)}`,
-                "Path=/",
-                "Max-Age=86400",
-                "HttpOnly",
-                "Secure",
-                "SameSite=Lax"
-            ].join("; ");
+        /* =================================================
+           RESPONSE
+        ================================================= */
 
         return json(
             200,
@@ -243,7 +332,9 @@ exports.handler = async (event) => {
                 sessionToken,
 
                 user: {
-                    id: user.id,
+
+                    id:
+                        user.id,
 
                     telegramId:
                         user.telegram_id,
@@ -260,10 +351,6 @@ exports.handler = async (event) => {
                     photoUrl:
                         user.photo_url
                 }
-            },
-            {
-                "Set-Cookie":
-                    sessionCookie
             }
         );
 
@@ -274,10 +361,13 @@ exports.handler = async (event) => {
             error
         );
 
-        return json(500, {
-            error:
-                "Internal server error"
-        });
+        return json(
+            500,
+            {
+                error:
+                    "Internal server error"
+            }
+        );
 
     }
 };

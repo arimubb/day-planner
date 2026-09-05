@@ -2,10 +2,11 @@
     "name": "Мой день",
     "short_name": "Мой день",
     "description": "Личный планировщик задач",
-    "start_url": "/",
+    "start_url": "/?app=pwa",
+    "scope": "/",
     "display": "standalone",
-    "background_color": "black",
-    "theme_color": "black",
+    "background_color": "#ffffff",
+    "theme_color": "#ffffff",
     "orientation": "portrait",
     "icons": [
         {

@@ -1,30 +1,31 @@
 const crypto = require("crypto");
 
-/* =========================================================
-   SESSION SECRET
-========================================================= */
-
 function getSessionSecret() {
+
     const secret =
         process.env.TELEGRAM_BOT_TOKEN;
 
     if (!secret) {
+
         throw new Error(
             "TELEGRAM_BOT_TOKEN is not configured"
         );
+
     }
 
     return secret;
 }
 
-/* =========================================================
-   CREATE SESSION TOKEN
-========================================================= */
 
 function createSessionToken(userId) {
+
     const payload = {
+
         userId,
-        createdAt: Date.now()
+
+        createdAt:
+            Date.now()
+
     };
 
     const payloadString =
@@ -46,11 +47,9 @@ function createSessionToken(userId) {
     return `${payloadString}.${signature}`;
 }
 
-/* =========================================================
-   VERIFY SESSION TOKEN
-========================================================= */
 
 function verifySessionToken(token) {
+
     if (!token) {
         return null;
     }
@@ -103,6 +102,7 @@ function verifySessionToken(token) {
     }
 
     try {
+
         const payload =
             JSON.parse(
                 Buffer
@@ -117,45 +117,45 @@ function verifySessionToken(token) {
             return null;
         }
 
-        if (!payload.createdAt) {
-            return null;
-        }
-
-        const sessionAge =
-            Date.now() -
+        const createdAt =
             Number(
                 payload.createdAt
             );
 
-        /*
-         * Сессия действует 24 часа
-         */
+        if (!createdAt) {
+            return null;
+        }
+
+        const sessionAge =
+            Date.now() - createdAt;
 
         if (
-            sessionAge >
-            86400000
+            sessionAge > 86400000
         ) {
             return null;
         }
 
-        if (sessionAge < 0) {
+        if (
+            sessionAge < 0
+        ) {
             return null;
         }
 
         return {
-            userId: payload.userId
+            userId:
+                payload.userId
         };
 
     } catch {
+
         return null;
+
     }
 }
 
-/* =========================================================
-   GET SESSION TOKEN
-========================================================= */
 
 function getSessionToken(event) {
+
     const authorization =
         event.headers?.authorization ||
         event.headers?.Authorization;
@@ -177,12 +177,13 @@ function getSessionToken(event) {
         .trim();
 }
 
-/* =========================================================
-   EXPORT
-========================================================= */
 
 module.exports = {
-    createSessionToken,
+
     verifySessionToken,
-    getSessionToken
+
+    getSessionToken,
+
+    createSessionToken
+
 };

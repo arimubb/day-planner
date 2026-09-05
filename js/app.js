@@ -166,39 +166,64 @@ function setupHomeScreenButton() {
             getTelegramWebApp();
 
         if (isTelegramMiniApp()) {
-            let handoffCode = null;
 
-            try {
-                handoffCode =
-                    localStorage.getItem(
-                        "dayPlannerHandoffCode"
-                    );
-            } catch {}
+    let handoffCode = null;
 
-            if (
-                handoffCode &&
-                tg &&
-                typeof tg.openLink === "function"
-            ) {
-                const url =
-                    window.location.origin +
-                    window.location.pathname +
-                    "?handoff=" +
-                    encodeURIComponent(
-                        handoffCode
-                    );
+    try {
+        handoffCode = localStorage.getItem(
+            "dayPlannerHandoffCode"
+        );
+    } catch (error) {
+        console.warn(
+            "Не удалось получить handoff:",
+            error
+        );
+    }
 
-                try {
-                    tg.openLink(url);
-                    return;
-                } catch (error) {
-                    console.warn(
-                        "Не удалось открыть Safari:",
-                        error
-                    );
-                }
-            }
-        }
+    if (!handoffCode) {
+
+        console.warn(
+            "Handoff code отсутствует"
+        );
+
+        openHomeScreenModal();
+
+        return;
+    }
+
+    const url =
+        `${window.location.origin}/?handoff=${encodeURIComponent(
+            handoffCode
+        )}&install=pwa`;
+
+    console.log(
+        "Открываем Safari для установки PWA:",
+        url
+    );
+
+    /*
+     * Открываем URL именно как внешнюю ссылку.
+     */
+    if (
+        tg &&
+        typeof tg.openLink === "function"
+    ) {
+
+        tg.openLink(url);
+
+        return;
+    }
+
+    /*
+     * Запасной вариант
+     */
+    window.open(
+        url,
+        "_blank"
+    );
+
+    return;
+}
 
         openHomeScreenModal();
     }
@@ -243,6 +268,7 @@ function setupHomeScreenButton() {
 API
 ========================================================= */
 async function exchangeHandoffCode() {
+
     const params =
         new URLSearchParams(
             window.location.search
@@ -255,15 +281,21 @@ async function exchangeHandoffCode() {
         return false;
     }
 
+    console.log(
+        "Обмениваем handoff code..."
+    );
+
     const response =
         await fetch(
             `${API_BASE}/exchange-handoff`,
             {
                 method: "POST",
+
                 headers: {
                     "Content-Type":
                         "application/json"
                 },
+
                 body: JSON.stringify({
                     code
                 })
@@ -273,10 +305,14 @@ async function exchangeHandoffCode() {
     let data = {};
 
     try {
-        data = await response.json();
-    } catch {}
+        data =
+            await response.json();
+    } catch {
+        data = {};
+    }
 
     if (!response.ok) {
+
         throw new Error(
             data.error ||
             "Не удалось получить сессию"
@@ -284,38 +320,62 @@ async function exchangeHandoffCode() {
     }
 
     if (!data.sessionToken) {
+
         throw new Error(
             "Сервер не вернул sessionToken"
         );
     }
 
+    /*
+     * Сохраняем новую сессию
+     */
     sessionToken =
         data.sessionToken;
 
     telegramUser =
         data.user || null;
 
-    localStorage.setItem(
-        SESSION_KEY,
-        sessionToken
-    );
+    try {
 
-    if (telegramUser) {
         localStorage.setItem(
-            USER_KEY,
-            JSON.stringify(
-                telegramUser
-            )
+            SESSION_KEY,
+            sessionToken
         );
+
+        if (telegramUser) {
+
+            localStorage.setItem(
+                USER_KEY,
+                JSON.stringify(
+                    telegramUser
+                )
+            );
+
+        }
+
+    } catch (error) {
+
+        console.warn(
+            "Не удалось сохранить PWA-сессию:",
+            error
+        );
+
     }
 
     /*
-     * Удаляем handoff из URL
+     * Сохраняем факт успешного обмена
      */
-    window.history.replaceState(
-        {},
-        document.title,
-        window.location.pathname
+    try {
+
+        localStorage.setItem(
+            "dayPlannerAuthenticated",
+            "true"
+        );
+
+    } catch {}
+
+    console.log(
+        "Handoff успешно обменян"
     );
 
     return true;
@@ -497,16 +557,21 @@ function restoreLocalSession() {
                 USER_KEY
             );
 
-        if (!savedToken) {
+        if (
+            !savedToken
+        ) {
             return false;
         }
 
-        sessionToken = savedToken;
+        sessionToken =
+            savedToken;
 
         if (savedUser) {
             try {
                 telegramUser =
-                    JSON.parse(savedUser);
+                    JSON.parse(
+                        savedUser
+                    );
             } catch {
                 telegramUser = null;
             }
@@ -515,10 +580,14 @@ function restoreLocalSession() {
         return true;
 
     } catch (error) {
+
         console.warn(
             "Не удалось восстановить сессию:",
             error
         );
+
+        sessionToken = null;
+        telegramUser = null;
 
         return false;
     }
@@ -3538,79 +3607,226 @@ INIT
 ========================================================= */
 
 async function init() {
+
     loadTheme();
+
     updateDateUI();
+
     setupHomeScreenButton();
 
     try {
-        /*
-         * ==========================================
-         * ЕСЛИ ОТКРЫТО В TELEGRAM
-         * ==========================================
-         */
+
+        const params =
+            new URLSearchParams(
+                window.location.search
+            );
+
+        const handoff =
+            params.get("handoff");
+
+        const isInstallFlow =
+            params.get("install") === "pwa";
+
+        const isStandalone =
+            window.matchMedia &&
+            window.matchMedia(
+                "(display-mode: standalone)"
+            ).matches;
+
+        const isIOSStandalone =
+            window.navigator.standalone === true;
+
+        const isPWA =
+            isStandalone ||
+            isIOSStandalone ||
+            isInstallFlow;
+
+        /* =================================================
+           1. TELEGRAM
+        ================================================= */
 
         if (isTelegramMiniApp()) {
 
-    await authenticateTelegram();
-
-    renderTelegramUser();
-
-    await loadTasksFromServer();
-
-} else {
-
-    /*
-     * Возможно, Safari только что пришёл
-     * из Telegram с одноразовым handoff-кодом.
-     */
-    const handoff =
-        new URLSearchParams(
-            window.location.search
-        ).get("handoff");
-
-    if (handoff) {
-
-        await exchangeHandoffCode();
-
-        renderTelegramUser();
-
-        await loadTasksFromServer();
-
-    } else {
-
-        const restored =
-            restoreLocalSession();
-
-        if (!restored) {
-            throw new Error(
-                "Сначала откройте приложение через Telegram и войдите в него."
+            console.log(
+                "Запуск внутри Telegram"
             );
+
+            await authenticateTelegram();
+
+            renderTelegramUser();
+
+            await loadTasksFromServer();
+
         }
 
-        renderTelegramUser();
+        /* =================================================
+           2. BROWSER / SAFARI / PWA
+        ================================================= */
 
-        await loadTasksFromServer();
-    }
-}
+        else {
 
-        /*
-         * ==========================================
-         * ОТРИСОВКА
-         * ==========================================
-         */
+            /*
+             * ---------------------------------------------
+             * INSTALL FLOW
+             *
+             * Safari открыл ссылку:
+             *
+             * ?handoff=XXXX&install=pwa
+             *
+             * Здесь НЕ обмениваем handoff.
+             *
+             * Это важно!
+             *
+             * Иначе Safari потратит одноразовый код,
+             * а PWA уже не сможет его использовать.
+             * ---------------------------------------------
+             */
+
+            if (
+                handoff &&
+                isInstallFlow &&
+                !isStandalone &&
+                !isIOSStandalone
+            ) {
+
+                console.log(
+                    "Режим установки PWA"
+                );
+
+                console.log(
+                    "Handoff сохранён в URL для PWA"
+                );
+
+                /*
+                 * Пока ничего не обмениваем.
+                 *
+                 * Пользователь устанавливает приложение
+                 * именно с этой страницы.
+                 */
+
+                restoreLocalSession();
+
+                if (sessionToken) {
+
+                    renderTelegramUser();
+
+                    await loadTasksFromServer();
+
+                }
+
+            }
+
+            /*
+             * ---------------------------------------------
+             * PWA
+             *
+             * Если приложение уже установлено,
+             * здесь обмениваем handoff.
+             * ---------------------------------------------
+             */
+
+            else if (
+                handoff &&
+                (
+                    isStandalone ||
+                    isIOSStandalone
+                )
+            ) {
+
+                console.log(
+                    "PWA запущена с handoff"
+                );
+
+                await exchangeHandoffCode();
+
+                renderTelegramUser();
+
+                await loadTasksFromServer();
+
+                /*
+                 * Убираем handoff из URL,
+                 * чтобы он не использовался повторно.
+                 */
+
+                try {
+
+                    const cleanUrl =
+                        window.location.origin +
+                        window.location.pathname;
+
+                    window.history.replaceState(
+                        {},
+                        document.title,
+                        cleanUrl
+                    );
+
+                } catch (error) {
+
+                    console.warn(
+                        "Не удалось очистить URL:",
+                        error
+                    );
+
+                }
+
+            }
+
+            /*
+             * ---------------------------------------------
+             * Обычный Safari / обычный PWA
+             * ---------------------------------------------
+             */
+
+            else {
+
+                const restored =
+                    restoreLocalSession();
+
+                if (!restored) {
+
+                    throw new Error(
+                        isPWA
+                            ? "Сессия приложения не найдена. Сначала откройте приложение через Telegram и добавьте его на экран «Домой»."
+                            : "Сессия не найдена. Сначала откройте приложение через Telegram."
+                    );
+
+                }
+
+                console.log(
+                    isPWA
+                        ? "PWA-сессия восстановлена"
+                        : "Safari-сессия восстановлена"
+                );
+
+                renderTelegramUser();
+
+                await loadTasksFromServer();
+
+            }
+
+        }
+
+        /* =================================================
+           RENDER
+        ================================================= */
 
         renderCalendar();
+
         renderTasks();
+
         renderAllTasks();
+
         renderAnalytics();
 
     } catch (error) {
+
         console.error(
             "Ошибка запуска приложения:",
             error
         );
 
         renderCalendar();
+
         renderTasks();
 
         const oldMessage =
@@ -3623,7 +3839,9 @@ async function init() {
         }
 
         const message =
-            document.createElement("div");
+            document.createElement(
+                "div"
+            );
 
         message.id =
             "startupErrorMessage";
@@ -3687,15 +3905,24 @@ async function init() {
             </div>
         `;
 
-        document.body.appendChild(message);
+        document.body.appendChild(
+            message
+        );
 
-        $("reloadAppButton")
-            .addEventListener(
+        const reloadButton =
+            $("reloadAppButton");
+
+        if (reloadButton) {
+
+            reloadButton.addEventListener(
                 "click",
                 () => {
-                    location.reload();
+                    window.location.reload();
                 }
             );
+
+        }
+
     }
 }
 
