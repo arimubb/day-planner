@@ -622,38 +622,7 @@ async function loadTasksFromServer() {
 /* =========================================================
 NORMALIZE TASKS
 ========================================================= */
-function renderTelegramUser() {
-    if (!telegramUser) return;
 
-    const firstName = telegramUser.firstName || "Пользователь";
-    const lastName = telegramUser.lastName || "";
-    const username = telegramUser.username || "";
-
-    const fullName = `${firstName} ${lastName}`.trim();
-
-    userName.textContent = fullName || "Пользователь";
-
-    if (username) {
-        userUsername.textContent = `@${username}`;
-    } else {
-        userUsername.textContent = "";
-    }
-
-    const photoUrl = telegramUser.photoUrl;
-
-    if (photoUrl) {
-        userAvatar.src = photoUrl;
-        userAvatar.classList.remove("hidden");
-        userAvatarFallback.classList.add("hidden");
-    } else {
-        userAvatar.classList.add("hidden");
-
-        userAvatarFallback.textContent =
-            firstName.charAt(0).toUpperCase();
-
-        userAvatarFallback.classList.remove("hidden");
-    }
-}
 function normalizeTasks() {
 
     tasks =
