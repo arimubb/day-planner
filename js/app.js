@@ -3602,7 +3602,6 @@ async function init() {
 
             await authenticateTelegram();
 
-            renderTelegramUser();
 
             await loadTasksFromServer();
         }
@@ -3647,7 +3646,6 @@ async function init() {
 
                 await exchangeHandoffCode();
 
-                renderTelegramUser();
 
                 await loadTasksFromServer();
             }
@@ -3683,7 +3681,6 @@ async function init() {
                         "Сессия восстановлена из localStorage"
                     );
 
-                    renderTelegramUser();
 
                     await loadTasksFromServer();
                 }
