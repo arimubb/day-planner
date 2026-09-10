@@ -1,14 +1,9 @@
 const THEME_KEY = "dayPlannerTheme";
-const SESSION_KEY = "dayPlannerSession";
-const USER_KEY = "dayPlannerTelegramUser";
 
 const API_BASE = "/.netlify/functions";
 
 let selectedDate = getTodayKey();
 let tasks = [];
-
-let sessionToken = null;
-let telegramUser = null;
 
 let selectedRepeatDays = [];
 let openedTaskId = null;
@@ -96,11 +91,7 @@ function getTelegramWebApp() {
 function isTelegramMiniApp() {
     const tg = getTelegramWebApp();
 
-    return Boolean(
-        tg &&
-        typeof tg.initData === "string" &&
-        tg.initData.length > 0
-    );
+    return Boolean(tg);
 }
 
 function setupTelegram() {
@@ -165,66 +156,6 @@ function setupHomeScreenButton() {
         const tg =
             getTelegramWebApp();
 
-        if (isTelegramMiniApp()) {
-
-    let handoffCode = null;
-
-    try {
-        handoffCode = localStorage.getItem(
-            "dayPlannerHandoffCode"
-        );
-    } catch (error) {
-        console.warn(
-            "Не удалось получить handoff:",
-            error
-        );
-    }
-
-    if (!handoffCode) {
-
-        console.warn(
-            "Handoff code отсутствует"
-        );
-
-        openHomeScreenModal();
-
-        return;
-    }
-
-    const url =
-        `${window.location.origin}/?handoff=${encodeURIComponent(
-            handoffCode
-        )}&install=pwa`;
-
-    console.log(
-        "Открываем Safari для установки PWA:",
-        url
-    );
-
-    /*
-     * Открываем URL именно как внешнюю ссылку.
-     */
-    if (
-        tg &&
-        typeof tg.openLink === "function"
-    ) {
-
-        tg.openLink(url);
-
-        return;
-    }
-
-    /*
-     * Запасной вариант
-     */
-    window.open(
-        url,
-        "_blank"
-    );
-
-    return;
-}
-
         openHomeScreenModal();
     }
 );
@@ -267,136 +198,13 @@ function setupHomeScreenButton() {
 /* =========================================================
 API
 ========================================================= */
-async function exchangeHandoffCode() {
-
-    const params =
-        new URLSearchParams(
-            window.location.search
-        );
-
-    const code =
-        params.get("handoff");
-
-    if (!code) {
-        return false;
-    }
-
-    console.log(
-        "Обмениваем handoff code..."
-    );
-
-    const response =
-        await fetch(
-            `${API_BASE}/exchange-handoff`,
-            {
-                method: "POST",
-
-                headers: {
-                    "Content-Type":
-                        "application/json"
-                },
-
-                body: JSON.stringify({
-                    code
-                })
-            }
-        );
-
-    let data = {};
-
-    try {
-        data =
-            await response.json();
-    } catch {
-        data = {};
-    }
-
-    if (!response.ok) {
-
-        throw new Error(
-            data.error ||
-            "Не удалось получить сессию"
-        );
-    }
-
-    if (!data.sessionToken) {
-
-        throw new Error(
-            "Сервер не вернул sessionToken"
-        );
-    }
-
-    /*
-     * Сохраняем новую сессию
-     */
-    sessionToken =
-        data.sessionToken;
-
-    telegramUser =
-        data.user || null;
-
-    try {
-
-        localStorage.setItem(
-            SESSION_KEY,
-            sessionToken
-        );
-
-        if (telegramUser) {
-
-            localStorage.setItem(
-                USER_KEY,
-                JSON.stringify(
-                    telegramUser
-                )
-            );
-
-        }
-
-    } catch (error) {
-
-        console.warn(
-            "Не удалось сохранить PWA-сессию:",
-            error
-        );
-
-    }
-
-    /*
-     * Сохраняем факт успешного обмена
-     */
-    try {
-
-        localStorage.setItem(
-            "dayPlannerAuthenticated",
-            "true"
-        );
-
-    } catch {}
-
-    console.log(
-        "Handoff успешно обменян"
-    );
-
-    return true;
-}
 async function apiRequest(
     endpoint,
     options = {}
 ) {
 
-    if (!sessionToken) {
-
-        throw new Error(
-            "Пользователь не авторизован"
-        );
-
-    }
-
     const headers = {
-        ...(options.headers || {}),
-        "Authorization":
-            `Bearer ${sessionToken}`
+        ...(options.headers || {})
     };
 
     if (
@@ -437,25 +245,6 @@ async function apiRequest(
 
     if (!response.ok) {
 
-        if (response.status === 401) {
-            sessionToken = null;
-            telegramUser = null;
-
-            try {
-                localStorage.removeItem(
-                    SESSION_KEY
-                );
-
-                localStorage.removeItem(
-                    USER_KEY
-                );
-
-                sessionStorage.removeItem(
-                    SESSION_KEY
-                );
-            } catch {}
-        }
-
         throw new Error(
             data.error ||
             `Ошибка сервера: ${response.status}`
@@ -466,136 +255,6 @@ async function apiRequest(
     return data;
 }
 
-/* =========================================================
-TELEGRAM AUTH
-========================================================= */
-
-async function authenticateTelegram() {
-    const tg = setupTelegram();
-
-    if (!tg || !tg.initData) {
-        throw new Error(
-            "Откройте приложение через Telegram для первой авторизации."
-        );
-    }
-
-    const initData = tg.initData;
-
-    const response = await fetch(
-        `${API_BASE}/telegram-auth`,
-        {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify({
-                initData
-            })
-        }
-    );
-
-    let data = {};
-
-    try {
-        data = await response.json();
-    } catch {
-        data = {};
-    }
-
-    if (!response.ok) {
-        throw new Error(
-            data.error ||
-            "Не удалось авторизоваться через Telegram."
-        );
-    }
-
-    if (!data.sessionToken) {
-        throw new Error(
-            "Сервер не вернул sessionToken."
-        );
-    }
-
-    sessionToken = data.sessionToken;
-    telegramUser = data.user || null;
-    if (data.handoffCode) {
-        try {
-            localStorage.setItem(
-                "dayPlannerHandoffCode",
-                data.handoffCode
-            );
-        } catch {}
-    }
-    /*
-     * Сохраняем сессию для Safari / PWA
-     */
-    try {
-        localStorage.setItem(
-            SESSION_KEY,
-            sessionToken
-        );
-
-        if (telegramUser) {
-            localStorage.setItem(
-                USER_KEY,
-                JSON.stringify(telegramUser)
-            );
-        }
-    } catch (error) {
-        console.warn(
-            "Не удалось сохранить сессию:",
-            error
-        );
-    }
-
-    return data;
-}
-function restoreLocalSession() {
-    try {
-        const savedToken =
-            localStorage.getItem(
-                SESSION_KEY
-            );
-
-        const savedUser =
-            localStorage.getItem(
-                USER_KEY
-            );
-
-        if (
-            !savedToken
-        ) {
-            return false;
-        }
-
-        sessionToken =
-            savedToken;
-
-        if (savedUser) {
-            try {
-                telegramUser =
-                    JSON.parse(
-                        savedUser
-                    );
-            } catch {
-                telegramUser = null;
-            }
-        }
-
-        return true;
-
-    } catch (error) {
-
-        console.warn(
-            "Не удалось восстановить сессию:",
-            error
-        );
-
-        sessionToken = null;
-        telegramUser = null;
-
-        return false;
-    }
-}
 /* =========================================================
 LOAD TASKS
 ========================================================= */
@@ -3581,196 +3240,17 @@ INIT
 async function init() {
 
     loadTheme();
-
     updateDateUI();
-
     setupHomeScreenButton();
 
     try {
-
-        /*
-         * =================================================
-         * TELEGRAM MINI APP
-         * =================================================
-         */
-
-        if (isTelegramMiniApp()) {
-
-            console.log(
-                "Запуск внутри Telegram"
-            );
-
-            await authenticateTelegram();
-
-
-            await loadTasksFromServer();
-        }
-
-
-        /*
-         * =================================================
-         * SAFARI / PWA
-         * =================================================
-         */
-
-        else {
-
-            const params =
-                new URLSearchParams(
-                    window.location.search
-                );
-
-            const handoff =
-                params.get(
-                    "handoff"
-                );
-
-
-            /*
-             * =============================================
-             * ПЕРВЫЙ ЗАПУСК ЧЕРЕЗ SAFARI
-             *
-             * Есть handoff.
-             *
-             * Обмениваем его на sessionToken.
-             *
-             * Сервер одновременно создаёт Cookie.
-             * =============================================
-             */
-
-            if (handoff) {
-
-                console.log(
-                    "Найден handoff code"
-                );
-
-                await exchangeHandoffCode();
-
-
-                await loadTasksFromServer();
-            }
-
-
-            /*
-             * =============================================
-             * ОБЫЧНЫЙ SAFARI / УСТАНОВЛЕННАЯ PWA
-             *
-             * handoff уже не нужен.
-             *
-             * Сначала пробуем localStorage.
-             *
-             * Если его нет — проверяем Cookie
-             * через сервер.
-             * =============================================
-             */
-
-            else {
-
-                let restored =
-                    restoreLocalSession();
-
-
-                /*
-                 * Если localStorage есть —
-                 * используем его.
-                 */
-
-                if (restored) {
-
-                    console.log(
-                        "Сессия восстановлена из localStorage"
-                    );
-
-
-                    await loadTasksFromServer();
-                }
-
-
-                /*
-                 * Если localStorage нет,
-                 * пробуем Cookie.
-                 */
-
-                else {
-
-                    console.log(
-                        "localStorage нет. Проверяем Cookie..."
-                    );
-
-                    /*
-                     * Временно устанавливаем
-                     * специальный режим проверки.
-                     */
-
-                    sessionToken = null;
-
-                    telegramUser = null;
-
-
-                    const response =
-                        await fetch(
-                            `${API_BASE}/tasks`,
-                            {
-                                method: "GET",
-
-                                credentials:
-                                    "include"
-                            }
-                        );
-
-
-                    if (
-                        !response.ok
-                    ) {
-
-                        throw new Error(
-                            "Сессия приложения не найдена. Сначала откройте приложение через Telegram и добавьте его на экран «Домой»."
-                        );
-                    }
-
-
-                    /*
-                     * Cookie валидна.
-                     *
-                     * Получаем задачи.
-                     */
-
-                    const data =
-                        await response.json();
-
-
-                    tasks =
-                        Array.isArray(
-                            data.tasks
-                        )
-                            ? data.tasks
-                            : [];
-
-
-                    normalizeTasks();
-
-                    console.log(
-                        "PWA-сессия восстановлена через Cookie"
-                    );
-                }
-            }
-        }
-
-
-        /*
-         * =================================================
-         * RENDER
-         * =================================================
-         */
+        setupTelegram();
+        await loadTasksFromServer();
 
         renderCalendar();
-
         renderTasks();
-
         renderAllTasks();
-
         renderAnalytics();
-
 
     } catch (error) {
 

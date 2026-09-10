@@ -1,9 +1,8 @@
 const { createClient } = require("@supabase/supabase-js");
 
 const {
-    verifySessionToken,
-    getSessionToken
-} = require("../lib/auth");
+    getAnonymousUser
+} = require("../lib/anonymous-user");
 
 const supabase = createClient(
     process.env.SUPABASE_URL,
@@ -17,29 +16,12 @@ function json(statusCode, data) {
             "Content-Type": "application/json",
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Headers":
-                "Content-Type, Authorization",
+                "Content-Type",
             "Access-Control-Allow-Methods":
                 "POST, OPTIONS"
         },
         body: JSON.stringify(data)
     };
-}
-
-async function getDatabaseUser(userId) {
-    const {
-        data,
-        error
-    } = await supabase
-        .from("telegram_users")
-        .select("id, telegram_id")
-        .eq("id", userId)
-        .single();
-
-    if (error || !data) {
-        return null;
-    }
-
-    return data;
 }
 
 exports.handler = async (event) => {
@@ -63,36 +45,10 @@ exports.handler = async (event) => {
 
     try {
 
-        /* ============================================
-           ПРОВЕРЯЕМ СЕССИЮ
-        ============================================ */
-
-        const sessionToken =
-            getSessionToken(event);
-
-        const session =
-            verifySessionToken(
-                sessionToken
-            );
-
-        if (!session) {
-            return json(401, {
-                error:
-                    "Invalid or expired session"
-            });
-        }
-
-        const user =
-            await getDatabaseUser(
-                session.userId
-            );
-
-        if (!user) {
-            return json(401, {
-                error:
-                    "Telegram user not found"
-            });
-        }
+        const {
+            user,
+            setCookie
+        } = await getAnonymousUser(event);
 
         /* ============================================
            ПОЛУЧАЕМ ID ЗАДАЧИ
@@ -156,7 +112,7 @@ exports.handler = async (event) => {
                 taskId
             )
             .eq(
-                "telegram_user_id",
+                "app_user_id",
                 user.id
             )
             .single();
@@ -232,7 +188,7 @@ exports.handler = async (event) => {
                 taskId
             )
             .eq(
-                "telegram_user_id",
+                "app_user_id",
                 user.id
             )
             .select("*")
@@ -251,7 +207,7 @@ exports.handler = async (event) => {
             });
         }
 
-        return json(200, {
+        const response = json(200, {
 
             success: true,
 
@@ -262,6 +218,12 @@ exports.handler = async (event) => {
                     .completed_dates || []
 
         });
+
+        if (setCookie) {
+            response.headers["Set-Cookie"] = setCookie;
+        }
+
+        return response;
 
     } catch (error) {
 
