@@ -156,27 +156,93 @@ function verifySessionToken(token) {
 
 function getSessionToken(event) {
 
+    /*
+     * 1. Сначала пробуем Authorization header.
+     *
+     * Это используется Telegram Mini App
+     * и обычным Safari.
+     */
+
     const authorization =
         event.headers?.authorization ||
         event.headers?.Authorization;
 
-    if (!authorization) {
-        return null;
-    }
-
     if (
-        !authorization.startsWith(
-            "Bearer "
-        )
+        authorization &&
+        authorization.startsWith("Bearer ")
     ) {
+
+        return authorization
+            .slice(7)
+            .trim();
+    }
+
+
+    /*
+     * 2. Если Authorization нет,
+     * пробуем получить sessionToken
+     * из HttpOnly Cookie.
+     *
+     * Это основной способ авторизации
+     * установленной PWA.
+     */
+
+    const cookieHeader =
+        event.headers?.cookie ||
+        event.headers?.Cookie;
+
+    if (!cookieHeader) {
         return null;
     }
 
-    return authorization
-        .slice(7)
-        .trim();
-}
 
+    const cookies =
+        cookieHeader
+            .split(";")
+            .map(
+                cookie =>
+                    cookie.trim()
+            );
+
+
+    for (const cookie of cookies) {
+
+        const separator =
+            cookie.indexOf("=");
+
+        if (separator === -1) {
+            continue;
+        }
+
+        const name =
+            cookie
+                .slice(
+                    0,
+                    separator
+                )
+                .trim();
+
+        const value =
+            cookie
+                .slice(
+                    separator + 1
+                )
+                .trim();
+
+        if (
+            name ===
+            "day_planner_session"
+        ) {
+
+            return decodeURIComponent(
+                value
+            );
+        }
+    }
+
+
+    return null;
+}
 
 module.exports = {
 

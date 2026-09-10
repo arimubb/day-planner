@@ -324,35 +324,53 @@ exports.handler = async (event) => {
            RESPONSE
         ================================================= */
 
-        return json(
-            200,
-            {
-                success: true,
+return {
+    statusCode: 200,
 
-                sessionToken,
+    headers: {
+        "Content-Type":
+            "application/json",
 
-                user: {
+        "Access-Control-Allow-Origin":
+            "*",
 
-                    id:
-                        user.id,
+        "Access-Control-Allow-Headers":
+            "Content-Type",
 
-                    telegramId:
-                        user.telegram_id,
+        "Access-Control-Allow-Methods":
+            "POST, OPTIONS",
 
-                    firstName:
-                        user.first_name,
+        "Set-Cookie":
+            `day_planner_session=${sessionToken}; Path=/; Max-Age=86400; HttpOnly; Secure; SameSite=Lax`
+    },
 
-                    lastName:
-                        user.last_name,
+    body: JSON.stringify({
+        success: true,
 
-                    username:
-                        user.username,
+        sessionToken,
 
-                    photoUrl:
-                        user.photo_url
-                }
-            }
-        );
+        user: {
+
+            id:
+                user.id,
+
+            telegramId:
+                user.telegram_id,
+
+            firstName:
+                user.first_name,
+
+            lastName:
+                user.last_name,
+
+            username:
+                user.username,
+
+            photoUrl:
+                user.photo_url
+        }
+    })
+};
 
     } catch (error) {
 

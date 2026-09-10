@@ -414,6 +414,10 @@ async function apiRequest(
             `${API_BASE}${endpoint}`,
             {
                 ...options,
+
+                credentials:
+                    "include",
+
                 headers
             }
         );
@@ -3634,9 +3638,10 @@ async function init() {
             await loadTasksFromServer();
         }
 
+
         /*
          * =================================================
-         * BROWSER / SAFARI / PWA
+         * SAFARI / PWA
          * =================================================
          */
 
@@ -3648,84 +3653,27 @@ async function init() {
                 );
 
             const handoff =
-                params.get("handoff");
-
-            const installMode =
-                params.get("install") === "pwa";
-
-            const isStandalone =
-                window.matchMedia(
-                    "(display-mode: standalone)"
-                ).matches ||
-                window.navigator.standalone === true;
-
-
-            /*
-             * =================================================
-             * SAFARI
-             *
-             * Мы пришли из Telegram с handoff,
-             * но PWA ещё НЕ установлена.
-             *
-             * ВАЖНО:
-             * handoff здесь НЕ используем.
-             *
-             * Он должен остаться в URL,
-             * чтобы установленная PWA получила его.
-             * =================================================
-             */
-
-            if (
-                handoff &&
-                installMode &&
-                !isStandalone
-            ) {
-
-                console.log(
-                    "Safari: handoff сохранён для установки PWA"
+                params.get(
+                    "handoff"
                 );
 
-                /*
-                 * Здесь НЕ вызываем:
-                 *
-                 * await exchangeHandoffCode();
-                 *
-                 * Иначе одноразовый handoff будет
-                 * использован ещё Safari.
-                 */
-
-                /*
-                 * Показываем обычную страницу.
-                 * Пользователь теперь может:
-                 *
-                 * Поделиться → На экран «Домой»
-                 */
-
-                renderCalendar();
-                renderTasks();
-                renderAllTasks();
-                renderAnalytics();
-
-                return;
-            }
-
 
             /*
-             * =================================================
-             * PWA
+             * =============================================
+             * ПЕРВЫЙ ЗАПУСК ЧЕРЕЗ SAFARI
              *
-             * Если приложение уже установлено и запущено
-             * с handoff — теперь можно его обменять.
-             * =================================================
+             * Есть handoff.
+             *
+             * Обмениваем его на sessionToken.
+             *
+             * Сервер одновременно создаёт Cookie.
+             * =============================================
              */
 
-            if (
-                handoff &&
-                isStandalone
-            ) {
+            if (handoff) {
 
                 console.log(
-                    "PWA: найден handoff, получаем сессию..."
+                    "Найден handoff code"
                 );
 
                 await exchangeHandoffCode();
@@ -3737,30 +3685,108 @@ async function init() {
 
 
             /*
-             * =================================================
-             * ОБЫЧНЫЙ SAFARI / PWA БЕЗ HANDOFF
-             * =================================================
+             * =============================================
+             * ОБЫЧНЫЙ SAFARI / УСТАНОВЛЕННАЯ PWA
+             *
+             * handoff уже не нужен.
+             *
+             * Сначала пробуем localStorage.
+             *
+             * Если его нет — проверяем Cookie
+             * через сервер.
+             * =============================================
              */
 
-            else if (!handoff) {
+            else {
 
-                const restored =
+                let restored =
                     restoreLocalSession();
 
-                if (!restored) {
 
-                    throw new Error(
-                        "Сессия приложения не найдена. Сначала откройте приложение через Telegram и добавьте его на экран «Домой»."
+                /*
+                 * Если localStorage есть —
+                 * используем его.
+                 */
+
+                if (restored) {
+
+                    console.log(
+                        "Сессия восстановлена из localStorage"
                     );
+
+                    renderTelegramUser();
+
+                    await loadTasksFromServer();
                 }
 
-                console.log(
-                    "Сессия восстановлена"
-                );
 
-                renderTelegramUser();
+                /*
+                 * Если localStorage нет,
+                 * пробуем Cookie.
+                 */
 
-                await loadTasksFromServer();
+                else {
+
+                    console.log(
+                        "localStorage нет. Проверяем Cookie..."
+                    );
+
+                    /*
+                     * Временно устанавливаем
+                     * специальный режим проверки.
+                     */
+
+                    sessionToken = null;
+
+                    telegramUser = null;
+
+
+                    const response =
+                        await fetch(
+                            `${API_BASE}/tasks`,
+                            {
+                                method: "GET",
+
+                                credentials:
+                                    "include"
+                            }
+                        );
+
+
+                    if (
+                        !response.ok
+                    ) {
+
+                        throw new Error(
+                            "Сессия приложения не найдена. Сначала откройте приложение через Telegram и добавьте его на экран «Домой»."
+                        );
+                    }
+
+
+                    /*
+                     * Cookie валидна.
+                     *
+                     * Получаем задачи.
+                     */
+
+                    const data =
+                        await response.json();
+
+
+                    tasks =
+                        Array.isArray(
+                            data.tasks
+                        )
+                            ? data.tasks
+                            : [];
+
+
+                    normalizeTasks();
+
+                    console.log(
+                        "PWA-сессия восстановлена через Cookie"
+                    );
+                }
             }
         }
 
@@ -3894,5 +3920,4 @@ async function init() {
         }
     }
 }
-
 init();
